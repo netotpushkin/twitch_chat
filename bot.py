@@ -476,7 +476,6 @@ if __name__ == "__main__":
     broadcaster_id = load_badges(token, CHANNEL.lstrip("#"))
     start_overlay_server()
     economy.load()
-    economy.start_flusher()
     tts.start(log=print)
 
     base = f"http://localhost:{OVERLAY_PORT}"

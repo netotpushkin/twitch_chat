@@ -78,7 +78,9 @@ def _maybe_reload_rates():
 
 _DB_FILE = os.path.join(STATE_DIR, "coins.db")
 _conn: sqlite3.Connection | None = None
-_lock = threading.Lock()
+# RLock — на случай если кто-то в будущем вызовет одно API-метод внутри другого.
+# С обычным Lock это был бы дедлок.
+_lock = threading.RLock()
 
 
 def _init_schema():
@@ -116,12 +118,6 @@ def load():
     _init_schema()
     n = _conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     log.log(f"(economy) БД {_DB_FILE} открыта, {n} аккаунтов")
-
-
-def start_flusher():
-    """Совместимость со старым API: с SQLite каждый award уже на диске,
-    периодический flush не нужен. Оставлено no-op чтобы bot.py не менять."""
-    pass
 
 
 # ---------- helpers ----------
@@ -229,9 +225,16 @@ def award_follow(user_id, login=None, display=None):
     return bal
 
 
+_WATCHTIME_BATCH = 500
+
+
 def award_watchtime(uids_to_info):
     """uids_to_info: {user_id: (login, display)} — из /chat/chatters.
-    Каждому +watchtime_base, активным (писал недавно) ещё +watchtime_active."""
+    Каждому +watchtime_base, активным (писал недавно) ещё +watchtime_active.
+
+    Бьём на батчи по _WATCHTIME_BATCH чтобы не держать write-lock дольше ~50мс:
+    иначе на крупном канале balance/award_chat от IRC-loop будут ждать всю
+    обработку. Между батчами _lock освобождается, читатели проскакивают."""
     base = RATES["watchtime_base"]
     active_bonus = RATES["watchtime_active"]
     active_window = RATES["watchtime_active_sec"]
@@ -240,24 +243,24 @@ def award_watchtime(uids_to_info):
     now = time.time()
     given = 0
     active = 0
-    with _tx():
-        for uid, (login, display) in uids_to_info.items():
-            if not uid:
-                continue
-            _upsert_meta(uid, login, display)
-            row = _conn.execute(
-                "SELECT last_msg_ts FROM users WHERE uid=?", (uid,)
-            ).fetchone()
-            last = row[0] if row else 0.0
-            amount = base
-            if now - last < active_window:
-                amount += active_bonus
-                active += 1
-            if amount > 0:
-                _conn.execute(
-                    "UPDATE users SET balance=balance+?, earned=earned+?, last_seen_ts=? WHERE uid=?",
-                    (amount, amount, now, uid))
-                given += 1
+    items = [(uid, info) for uid, info in uids_to_info.items() if uid]
+    for i in range(0, len(items), _WATCHTIME_BATCH):
+        with _tx():
+            for uid, (login, display) in items[i:i + _WATCHTIME_BATCH]:
+                _upsert_meta(uid, login, display)
+                row = _conn.execute(
+                    "SELECT last_msg_ts FROM users WHERE uid=?", (uid,)
+                ).fetchone()
+                last = row[0] if row else 0.0
+                amount = base
+                if now - last < active_window:
+                    amount += active_bonus
+                    active += 1
+                if amount > 0:
+                    _conn.execute(
+                        "UPDATE users SET balance=balance+?, earned=earned+?, last_seen_ts=? WHERE uid=?",
+                        (amount, amount, now, uid))
+                    given += 1
     return given, active
 
 
