@@ -106,7 +106,6 @@ DONATTY_TOKEN=
 
 # Опционально
 # OVERLAY_PORT=5005
-# OVERLAY_TOKEN=   # пустая строка — отключить токен в /test/*
 ```
 
 ---
