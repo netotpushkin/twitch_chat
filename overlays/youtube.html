@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>YouTube</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --glass-bg:    rgba(20, 22, 32, 0.62);
+    --glass-bg-2:  rgba(40, 44, 60, 0.46);
+    --glass-brd:   rgba(255, 255, 255, 0.20);
+    --txt:         #f4f6fb;
+    --txt-dim:     rgba(244, 246, 251, 0.72);
+    --yt:          #ff3b3b;
+    --yt-glow:     rgba(255, 59, 59, 0.45);
+    --shadow:      0 16px 40px rgba(0,0,0,0.55),
+                   0 4px 12px  rgba(0,0,0,0.30);
+  }
+  html, body {
+    margin:0; padding:0; background:transparent; overflow:hidden;
+    width:100vw; height:100vh;
+    color:var(--txt);
+    font:500 15px/1.4 Inter,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #wrap {
+    position:fixed; inset:0;
+    display:flex; align-items:stretch; justify-content:stretch;
+    opacity:0; transition: opacity .35s ease;
+    pointer-events:none;
+  }
+  #wrap.on  { opacity:1; }
+
+  #win {
+    flex:1; min-width:0;
+    box-sizing:border-box;
+    padding:10px;
+    display:flex; flex-direction:column;
+    border-radius:20px;
+    background:
+      linear-gradient(135deg, rgba(180, 40, 40, 0.50) 0%, rgba(40, 44, 60, 0.46) 70%);
+    border:1px solid var(--glass-brd);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    position:relative;
+  }
+  #win::before {
+    content:""; position:absolute; left:14px; right:14px; top:-1px;
+    height:3px; border-radius:0 0 3px 3px;
+    background: var(--yt);
+    box-shadow: 0 0 14px var(--yt-glow);
+  }
+
+  .head {
+    display:flex; align-items:center; gap:10px;
+    padding:6px 8px 10px;
+    color:var(--txt);
+    text-shadow:0 1px 2px rgba(0,0,0,0.45);
+    min-width:0; overflow:hidden;
+  }
+  .head .yt-mark {
+    width:28px; height:28px; flex:0 0 28px;
+    border-radius:8px;
+    background: radial-gradient(circle at 30% 30%,
+      rgba(255,90,90,0.55) 0%, rgba(60,12,12,0.55) 100%);
+    border:1px solid rgba(255,90,90,0.50);
+    box-shadow: 0 0 14px var(--yt-glow),
+                inset 0 1px 0 rgba(255,255,255,0.22);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .head .yt-mark svg { width:18px; height:18px; display:block; }
+  .head .title {
+    flex:1; min-width:0;
+    font-weight:700; font-size:13px;
+    letter-spacing:0.06em;
+    color:var(--txt-dim);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .head .live {
+    font-weight:800; font-size:12px;
+    letter-spacing:0.14em; text-transform:uppercase;
+    color:#ff8a8a;
+    text-shadow: 0 0 12px var(--yt-glow);
+  }
+
+  #frame-holder {
+    flex:1;
+    border-radius:12px;
+    overflow:hidden;
+    background:#000;
+    border:1px solid rgba(255,255,255,0.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.10),
+                inset 0 0 0 1px rgba(0,0,0,0.10);
+    position:relative;
+  }
+  iframe, #player { width:100%; height:100%; border:0; display:block; }
+
+  /* --- Панель голосования (стеклянная) --- */
+  #vote {
+    position:fixed; bottom:24px; left:50%;
+    width:420px; box-sizing:border-box;
+    padding:14px 22px;
+    border-radius:14px;
+    background:
+      linear-gradient(135deg, var(--glass-bg) 0%, var(--glass-bg-2) 100%);
+    border:1px solid var(--glass-brd);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    color:#fff;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+    font-weight:600;
+    line-height:1.25;
+    text-align:center;
+    opacity:0; transform:translate(-50%, 14px);
+    transition: opacity .25s ease, transform .25s ease;
+    pointer-events:none;
+    z-index:10;
+  }
+  #vote.on { opacity:1; transform:translate(-50%, 0); }
+  #vote .time {
+    font-size:22px; line-height:1.15; font-weight:700;
+  }
+  #vote .time #vote-sec {
+    color:#ffd76a;
+    text-shadow: 0 0 18px rgba(255,215,106,0.55);
+  }
+  #vote .counts {
+    margin-top:10px; font-weight:700; font-size:18px;
+    display:flex; justify-content:center; align-items:center; gap:18px; flex-wrap:wrap;
+  }
+  #vote .counts .opt {
+    display:inline-flex; align-items:center; gap:8px;
+  }
+  #vote .counts .lbl {
+    font-weight:600; font-size:14px;
+    text-transform:uppercase; letter-spacing:0.08em;
+    opacity:0.85;
+  }
+  #vote .counts .num { font-weight:800; font-size:22px; }
+  #vote .counts .sep {
+    width:1px; height:20px;
+    background: rgba(255,255,255,0.25);
+  }
+  #vote .counts .sk .num { color:#ff8a8a; text-shadow: 0 0 16px rgba(255,90,90,0.5); }
+  #vote .counts .kp .num { color:#7aff8a; text-shadow: 0 0 16px rgba(122,255,138,0.5); }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="win">
+      <div class="head">
+        <div class="yt-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="5" width="20" height="14" rx="3" fill="rgba(255,255,255,0.18)"/>
+            <polygon points="10,9 16,12 10,15" fill="#fff" stroke="none"/>
+          </svg>
+        </div>
+        <div class="title" id="win-title">YouTube</div>
+        <div class="live">LIVE</div>
+      </div>
+      <div id="frame-holder"><div id="player"></div></div>
+    </div>
+  </div>
+
+  <div id="vote">
+    <div class="time">Голосование за скип: <span id="vote-sec">30</span> с</div>
+    <div class="counts">
+      <span class="opt sk">
+        <span class="lbl">За (!-)</span>
+        <span class="num" id="vote-sk">0</span>
+      </span>
+      <span class="sep"></span>
+      <span class="opt kp">
+        <span class="lbl">Против (!+)</span>
+        <span class="num" id="vote-kp">0</span>
+      </span>
+    </div>
+  </div>
+
+<script>
+  const SSE_URL = (location.protocol === "file:" || !location.host)
+    ? "http://localhost:5005/media"
+    : "/media";
+
+  const VOLUME = 25;
+
+  let player = null;
+  let pendingCmd = null;
+  let apiReady = false;
+
+  const tag = document.createElement("script");
+  tag.src = "https://www.youtube.com/iframe_api";
+  document.head.appendChild(tag);
+
+  window.onYouTubeIframeAPIReady = function () {
+    player = new YT.Player("player", {
+      height: "100%", width: "100%",
+      playerVars: {
+        autoplay: 1, controls: 0, modestbranding: 1, rel: 0,
+        playsinline: 1, iv_load_policy: 3, disablekb: 1, fs: 0, mute: 1,
+      },
+      events: {
+        onReady: () => {
+          apiReady = true;
+          try { player.mute(); player.setVolume(VOLUME); } catch (_) {}
+          if (pendingCmd) { applyCmd(pendingCmd); pendingCmd = null; }
+        },
+        onStateChange: (e) => {
+          if (e.data === YT.PlayerState.PLAYING) {
+            try { player.unMute(); player.setVolume(VOLUME); } catch (_) {}
+          }
+          if (e.data === YT.PlayerState.ENDED) {
+            fetch("/yt/ended" + (window.OVERLAY_TOKEN ? "?token=" + encodeURIComponent(window.OVERLAY_TOKEN) : ""), { method: "GET", keepalive: true }).catch(() => {});
+          }
+        },
+        onError: (e) => {
+          console.error("YT error", e && e.data);
+          fetch("/yt/ended" + (window.OVERLAY_TOKEN ? "?token=" + encodeURIComponent(window.OVERLAY_TOKEN) : ""), { method: "GET", keepalive: true }).catch(() => {});
+        },
+      },
+    });
+  };
+
+  function setTitle(text) {
+    document.getElementById("win-title").textContent = text || "YouTube";
+  }
+  function show() { document.getElementById("wrap").classList.add("on"); }
+  function hide() {
+    document.getElementById("wrap").classList.remove("on");
+    if (apiReady && player && player.stopVideo) {
+      try { player.stopVideo(); } catch (_) {}
+    }
+    setTitle("YouTube");
+  }
+
+  let voteEndsAt = 0;
+  let voteTicker = null;
+  const voteEl = () => document.getElementById("vote");
+
+  function voteRenderTime() {
+    const rem = Math.max(0, Math.ceil((voteEndsAt - Date.now()) / 1000));
+    document.getElementById("vote-sec").textContent = rem;
+    if (rem <= 0 && voteTicker) { clearInterval(voteTicker); voteTicker = null; }
+  }
+  function voteShow(skip, keep, secondsLeft) {
+    voteEndsAt = Date.now() + Math.max(0, secondsLeft) * 1000;
+    document.getElementById("vote-sk").textContent = skip;
+    document.getElementById("vote-kp").textContent = keep;
+    voteRenderTime();
+    voteEl().classList.add("on");
+    if (voteTicker) clearInterval(voteTicker);
+    voteTicker = setInterval(voteRenderTime, 250);
+  }
+  function voteHide() {
+    voteEl().classList.remove("on");
+    if (voteTicker) { clearInterval(voteTicker); voteTicker = null; }
+  }
+
+  function applyCmd(cmd) {
+    if (cmd.evt === "vote") {
+      if (cmd.open) voteShow(cmd.skip, cmd.keep, cmd.seconds_left);
+      else voteHide();
+      return;
+    }
+    if (!apiReady || !player) { pendingCmd = cmd; return; }
+    if (cmd.evt === "play") {
+      voteHide();
+      try { player.mute(); } catch (_) {}
+      const opts = { videoId: cmd.id };
+      if (cmd.start != null) opts.startSeconds = cmd.start;
+      player.loadVideoById(opts);
+      try { player.playVideo(); } catch (_) {}
+      const t = cmd.title || "";
+      const who = cmd.requester ? ` — @${cmd.requester}` : "";
+      setTitle(t ? `${t}${who}` : "YouTube");
+      show();
+    } else if (cmd.evt === "stop") {
+      voteHide();
+      hide();
+    }
+  }
+
+  function connect() {
+    const es = new EventSource(SSE_URL);
+    es.onmessage = (e) => {
+      try { applyCmd(JSON.parse(e.data)); } catch (_) {}
+    };
+    es.onerror = () => { es.close(); setTimeout(connect, 2000); };
+  }
+  connect();
+</script>
+</body></html>

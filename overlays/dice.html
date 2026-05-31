@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Кубик</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --glass-brd:   rgba(255, 255, 255, 0.20);
+    --txt-dim:     rgba(244, 246, 251, 0.72);
+  }
+  html, body {
+    margin:0; padding:0; background:transparent; overflow:hidden;
+    width:100vw; height:100vh;
+    font-family: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #wrap {
+    position:fixed; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    opacity:0; transition: opacity .35s ease;
+    pointer-events:none;
+    /* Цветовые переменные карточки и кубика. Перебиваются по теме броска. */
+    /* Дефолт — фиолетовый аметист (под цвет самого кубика) */
+    --accent:      #b890ff;
+    --accent-glow: rgba(184, 144, 255, 0.55);
+    --accent-bg:   rgba(80, 30, 170, 0.50);
+    --accent-ico:  rgba(184, 144, 255, 0.40);
+    --accent-ico2: rgba(30, 8, 70, 0.55);
+    --accent-ring: rgba(184, 144, 255, 0.50);
+    /* Дефолт — фиолетовый аметист */
+    --face-light:  #e0c8ff;
+    --face-mid:    #7d4ecf;
+    --face-dark:   #2c0e5e;
+    --face-edge:   #0e0226;
+    --num-fill:    #fbf6ff;
+    --num-stroke:  #0e0226;
+  }
+  #wrap.on  { opacity:1; }
+
+  /* Стеклянная карточка вокруг кубика — в стиле alerts/donatty */
+  .card {
+    position:relative;
+    box-sizing:border-box;
+    width:380px;
+    min-height:340px;
+    padding:18px 26px 22px;
+    border-radius:20px;
+    background:
+      linear-gradient(135deg, var(--accent-bg) 0%, rgba(40, 44, 60, 0.46) 70%);
+    border:1px solid var(--glass-brd);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    display:flex; flex-direction:column; align-items:stretch; gap:4px;
+    color:#f4f6fb;
+    text-shadow:0 1px 2px rgba(0,0,0,0.45);
+  }
+  /* Горизонтальный акцент-бар на верхнем крае — как у webcam/youtube */
+  .card::before {
+    content:""; position:absolute; left:14px; right:14px; top:-1px;
+    height:3px; border-radius:0 0 3px 3px;
+    background: var(--accent);
+    box-shadow: 0 0 14px var(--accent-glow);
+  }
+  /* Шапка с иконкой-медальоном и заголовком — как у webcam/youtube */
+  .card .head {
+    display:flex; align-items:center; gap:10px;
+    padding:2px 4px 6px;
+    min-width:0;
+  }
+  .card .head .mark {
+    width:28px; height:28px; flex:0 0 28px;
+    border-radius:8px;
+    background: radial-gradient(circle at 30% 30%,
+      var(--accent-ico) 0%, var(--accent-ico2) 100%);
+    border:1px solid var(--accent-ring);
+    box-shadow: 0 0 14px var(--accent-glow),
+                inset 0 1px 0 rgba(255,255,255,0.22);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .card .head .mark svg { width:18px; height:18px; display:block; }
+  .card .head .title {
+    flex:1; min-width:0;
+    font-weight:700; font-size:13px;
+    letter-spacing:0.06em;
+    color: var(--txt-dim);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .card .status {
+    font-weight:600; font-size:18px;
+    text-align:center;
+    width:100%;
+    margin-top:4px;
+    min-height:2.6em;
+    overflow-wrap:anywhere; word-break:break-word;
+  }
+  .card .status strong { font-weight:800; }
+  .card .status .accent {
+    color: var(--accent);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 14px var(--accent-glow);
+    font-weight:800;
+  }
+
+  #d20 {
+    width: 230px; height: 230px;
+    position: relative;
+    align-self: center;
+  }
+  #d20 svg {
+    width:100%; height:100%; display:block;
+    overflow: visible;
+  }
+
+  /* Темы критов */
+  #wrap.crit-fail {
+    --accent:      #ff6a6a;
+    --accent-glow: rgba(255, 106, 106, 0.60);
+    --accent-bg:   rgba(180, 40, 40, 0.50);
+    --accent-ico:  rgba(255, 106, 106, 0.42);
+    --accent-ico2: rgba(60, 12, 12, 0.55);
+    --accent-ring: rgba(255, 106, 106, 0.50);
+    --face-light:  #ffb0b0;
+    --face-mid:    #d22020;
+    --face-dark:   #4a0707;
+    --face-edge:   #2a0303;
+    --num-fill:    #fff;
+    --num-stroke:  #2a0303;
+  }
+  #wrap.crit-win {
+    --accent:      #ffd76a;
+    --accent-glow: rgba(255, 215, 106, 0.65);
+    --accent-bg:   rgba(140, 100, 20, 0.50);
+    --accent-ico:  rgba(255, 215, 106, 0.40);
+    --accent-ico2: rgba(60, 40, 8, 0.55);
+    --accent-ring: rgba(255, 215, 106, 0.50);
+    --face-light:  #fff7c4;
+    --face-mid:    #ffc832;
+    --face-dark:   #b97308;
+    --face-edge:   #3a2402;
+    --num-fill:    #fff;
+    --num-stroke:  #3a2402;
+  }
+
+  /* Грани: ярче на верхне-левой (источник света) → темнее на нижне-правой.
+     Центральная (лицевая) — отдельный градиент с лёгким затемнением книзу. */
+  .face-front { fill: url(#gradFront); }
+  .face-tl    { fill: url(#gradTL); }   /* верх-лево — самая светлая */
+  .face-tr    { fill: url(#gradTR); }   /* верх-право — средняя */
+  .face-bt    { fill: url(#gradBT); }   /* низ — самая тёмная */
+  .edge       { stroke: var(--face-edge); stroke-width: 1.6; stroke-linejoin: round; fill: none; }
+  .rim        { stroke: var(--face-edge); stroke-width: 2.4; stroke-linejoin: round; fill: none; }
+  /* Тонкий световой блик на верхних рёбрах рамки */
+  .highlight  { stroke: rgba(255,255,255,0.55); stroke-width: 1.6; stroke-linejoin: round; fill: none; }
+
+  .num {
+    fill: var(--num-fill);
+    stroke: var(--num-stroke); stroke-width: 3; paint-order: stroke fill;
+    font-weight: 900; font-size: 96px;
+    letter-spacing: -0.02em;
+    text-anchor: middle; dominant-baseline: central;
+    user-select: none;
+  }
+
+  /* Точка вращения = центр SVG-группы */
+  #d20 .stage {
+    transform-origin: 50% 50%;
+    transform-box: fill-box;
+  }
+
+  /* Бросок: squash & stretch с лёгким наклоном — иллюзия «трясут в руке».
+     Без полного вращения, чтобы освещение граней оставалось правдоподобным. */
+  @keyframes shake-roll {
+    0%, 100% { transform: rotate( 0deg)  scale(1.00, 1.00); }
+    15%      { transform: rotate(-7deg)  scale(1.08, 0.92); }
+    30%      { transform: rotate( 0deg)  scale(0.92, 1.10); }
+    45%      { transform: rotate( 8deg)  scale(1.08, 0.92); }
+    60%      { transform: rotate(-3deg)  scale(0.94, 1.08); }
+    80%      { transform: rotate( 5deg)  scale(1.05, 0.96); }
+  }
+  #wrap.rolling #d20 .stage {
+    animation: shake-roll .55s cubic-bezier(.4, 0, .6, 1) infinite;
+  }
+
+  /* Приземление: «бам» — прилетает с увеличением, отскок и фиксация. */
+  @keyframes land {
+    0%   { transform: scale(0.4)  rotate(-14deg); opacity: 0; }
+    50%  { transform: scale(1.18) rotate(  8deg); opacity: 1; }
+    75%  { transform: scale(0.95) rotate( -3deg); }
+    100% { transform: scale(1)    rotate(  0deg); }
+  }
+  #wrap.settled #d20 .stage {
+    animation: land .6s cubic-bezier(.34, 1.56, .64, 1) both;
+  }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div class="card">
+      <div class="head">
+        <div class="mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12,2 22,8 22,16 12,22 2,16 2,8" fill="rgba(255,255,255,0.18)"/>
+            <polyline points="12,2 12,22"/>
+            <polyline points="2,8 22,16"/>
+            <polyline points="22,8 2,16"/>
+          </svg>
+        </div>
+        <div class="title">Бросок D20</div>
+      </div>
+      <div id="d20">
+        <svg viewBox="0 0 200 220" xmlns="http://www.w3.org/2000/svg">
+          <!--
+            Силуэт d20 — правильный pointy-top шестиугольник, центр (100,110), радиус 90:
+              T  = (100,  20)
+              TR = (178,  65)
+              BR = (178, 155)
+              B  = (100, 200)
+              BL = ( 22, 155)
+              TL = ( 22,  65)
+            Видимых граней — 4: центральная "лицевая" (T-BL-BR) и три внешних к каждому
+            из дальних углов TR, B, TL. Свет — сверху-слева.
+          -->
+          <defs>
+            <!-- Лицевая грань: ярче сверху, темнее книзу, чтобы создать объём. -->
+            <linearGradient id="gradFront" x1="0.35" y1="0" x2="0.65" y2="1">
+              <stop offset="0%"   stop-color="var(--face-light)"/>
+              <stop offset="55%"  stop-color="var(--face-mid)"/>
+              <stop offset="100%" stop-color="var(--face-dark)"/>
+            </linearGradient>
+            <!-- Верх-лево — обращена к свету: самая светлая. -->
+            <linearGradient id="gradTL" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%"   stop-color="var(--face-light)"/>
+              <stop offset="100%" stop-color="var(--face-mid)"/>
+            </linearGradient>
+            <!-- Верх-право — отвёрнута от света: средняя. -->
+            <linearGradient id="gradTR" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%"   stop-color="var(--face-mid)"/>
+              <stop offset="100%" stop-color="var(--face-dark)"/>
+            </linearGradient>
+            <!-- Низ — самая тёмная грань. -->
+            <linearGradient id="gradBT" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stop-color="var(--face-dark)"/>
+              <stop offset="100%" stop-color="var(--face-edge)"/>
+            </linearGradient>
+            <!-- Лёгкое внутреннее затемнение по краям лицевой грани (vignette). -->
+            <radialGradient id="vignette" cx="0.5" cy="0.55" r="0.7">
+              <stop offset="60%"  stop-color="rgba(0,0,0,0)"/>
+              <stop offset="100%" stop-color="rgba(0,0,0,0.28)"/>
+            </radialGradient>
+          </defs>
+
+          <g class="stage">
+            <!-- 4 видимые грани -->
+            <polygon class="face-tl"    points="22,65 22,155 100,20"/>
+            <polygon class="face-tr"    points="100,20 178,65 178,155"/>
+            <polygon class="face-bt"    points="22,155 100,200 178,155"/>
+            <polygon class="face-front" points="100,20 22,155 178,155"/>
+
+            <!-- Виньетка поверх лицевой грани -->
+            <polygon points="100,20 22,155 178,155" fill="url(#vignette)"/>
+
+            <!-- Тёмные рёбра между видимыми гранями (внутренний треугольник) -->
+            <polyline class="edge" points="100,20 22,155 178,155 100,20"/>
+            <!-- Внешний контур шестиугольника -->
+            <polygon class="rim" points="100,20 178,65 178,155 100,200 22,155 22,65"/>
+            <!-- Световой блик на верхних рёбрах -->
+            <polyline class="highlight" points="22,65 100,20 178,65"/>
+
+            <!-- Число — в центре лицевой грани -->
+            <text class="num" x="100" y="118">?</text>
+          </g>
+        </svg>
+      </div>
+      <div class="status" id="dice-status"></div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const wrap   = document.getElementById('wrap');
+  const numEl  = document.querySelector('#d20 .num');
+  const statEl = document.getElementById('dice-status');
+
+  let cycleTimer = null;
+  let hideTimer  = null;
+  let currentUser = '';
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function clearTimers() {
+    if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null; }
+    if (hideTimer)  { clearTimeout(hideTimer);   hideTimer  = null; }
+  }
+
+  function start(user) {
+    clearTimers();
+    currentUser = user || '';
+    wrap.classList.remove('settled', 'crit-fail', 'crit-win');
+    wrap.classList.add('on', 'rolling');
+    statEl.innerHTML = currentUser
+      ? `<strong>@${escapeHtml(currentUser)}</strong> бросает куб…`
+      : `Бросок куба…`;
+    cycleTimer = setInterval(() => {
+      numEl.textContent = String(1 + Math.floor(Math.random() * 20));
+    }, 60);
+  }
+
+  function stop(value) {
+    clearTimers();
+    wrap.classList.remove('rolling');
+    numEl.textContent = String(value);
+    let suffix = '';
+    if      (value === 1)  { wrap.classList.add('crit-fail'); suffix = ' — критический провал!'; }
+    else if (value === 20) { wrap.classList.add('crit-win');  suffix = ' — критический успех!'; }
+    const who = currentUser
+      ? `<strong>@${escapeHtml(currentUser)}</strong>`
+      : `Игрок`;
+    statEl.innerHTML = `${who} получает <span class="accent">${value}</span>${suffix}`;
+    wrap.classList.remove('settled');
+    void wrap.offsetWidth;
+    wrap.classList.add('settled');
+    hideTimer = setTimeout(() => {
+      wrap.classList.remove('on', 'settled', 'crit-fail', 'crit-win');
+    }, 7000);
+  }
+
+  function connect() {
+    const es = new EventSource('/dice');
+    es.onmessage = (e) => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (_) { return; }
+      if      (msg.evt === 'roll_start') start(msg.user || '');
+      else if (msg.evt === 'roll_stop')  stop(Number(msg.value) || 0);
+    };
+    es.onerror = () => {};
+  }
+  connect();
+})();
+</script>
+</body></html>

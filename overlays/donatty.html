@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Donations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --glass-bg:    rgba(20, 22, 32, 0.62);
+    --glass-bg-2:  rgba(40, 44, 60, 0.46);
+    --glass-brd:   rgba(255, 255, 255, 0.20);
+    --txt:         #f4f6fb;
+    --txt-dim:     rgba(244, 246, 251, 0.72);
+    /* Дефолтные «цветовые» переменные — потом перезаписываются tier-классами */
+    --accent:      #ffd76a;
+    --accent-glow: rgba(255, 215, 106, 0.50);
+    --accent-bg:   rgba(140, 100, 20, 0.50);
+    --accent-ring: rgba(255, 215, 106, 0.45);
+    --accent-ico:  rgba(255, 215, 106, 0.30);
+    --accent-ico2: rgba(60, 40, 8, 0.45);
+  }
+  html, body {
+    margin:0; padding:0; background:transparent; overflow:hidden;
+    color:var(--txt);
+    font:500 17px/1.4 Inter,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #stack {
+    position:fixed; inset:0;
+    display:flex; flex-direction:column-reverse;
+    align-items:center; justify-content:center;
+    gap:10px; padding:12px;
+  }
+
+  .alert {
+    position:relative;
+    box-sizing:border-box;
+    min-width:320px; max-width:540px;
+    padding:14px 18px 14px 22px;
+    border-radius:16px;
+    background:
+      linear-gradient(135deg, var(--accent-bg) 0%, rgba(40, 44, 60, 0.46) 70%);
+    border:1px solid var(--glass-brd);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    color:var(--txt);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+  }
+  .alert::before {
+    content:""; position:absolute; left:0; top:14px; bottom:14px;
+    width:3px; border-radius:3px;
+    background: var(--accent);
+    box-shadow: 0 0 16px var(--accent-glow);
+  }
+
+  /* --- Тиры по сумме доната --- */
+  .alert.tier-bronze {
+    --accent: #c0c0c0; --accent-glow: rgba(220,220,220,0.45);
+    --accent-bg: rgba(80,90,110,0.50); --accent-ring: rgba(220,220,220,0.45);
+    --accent-ico: rgba(220,220,220,0.28); --accent-ico2: rgba(40,46,60,0.50);
+  }
+  .alert.tier-blue {
+    --accent: #6bb6ff; --accent-glow: rgba(107,182,255,0.55);
+    --accent-bg: rgba(20,80,160,0.50); --accent-ring: rgba(107,182,255,0.50);
+    --accent-ico: rgba(107,182,255,0.32); --accent-ico2: rgba(10,30,70,0.50);
+  }
+  .alert.tier-gold { /* default — оставляем как было */ }
+  .alert.tier-purple {
+    --accent: #c98aff; --accent-glow: rgba(201,138,255,0.55);
+    --accent-bg: rgba(100,30,180,0.50); --accent-ring: rgba(201,138,255,0.50);
+    --accent-ico: rgba(201,138,255,0.32); --accent-ico2: rgba(40,12,70,0.55);
+  }
+  .alert.tier-epic {
+    --accent: #ff7a3d; --accent-glow: rgba(255,122,61,0.65);
+    --accent-bg: rgba(180,60,20,0.50); --accent-ring: rgba(255,122,61,0.55);
+    --accent-ico: rgba(255,122,61,0.36); --accent-ico2: rgba(60,16,6,0.60);
+  }
+
+  @keyframes alertIn {
+    from { opacity:0; transform:translateY(14px) scale(0.96); filter:blur(6px); }
+    to   { opacity:1; transform:none; filter:none; }
+  }
+  @keyframes alertOut {
+    from { opacity:1; transform:none; filter:none; }
+    to   { opacity:0; transform:translateY(-8px) scale(0.98); filter:blur(6px); }
+  }
+  .alert         { animation: alertIn 280ms cubic-bezier(.2,.7,.2,1) both; }
+  .alert.leaving { animation: alertOut 220ms ease-in both; }
+
+  .row { display:flex; align-items:center; gap:16px; }
+  .big-icon {
+    width:46px; height:46px; flex:0 0 46px;
+    border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    background: radial-gradient(circle at 30% 30%,
+      var(--accent-ico) 0%, var(--accent-ico2) 100%);
+    border:1px solid var(--accent-ring);
+    box-shadow: 0 0 22px var(--accent-glow),
+                inset 0 1px 0 rgba(255,255,255,0.22);
+  }
+  .big-icon svg { width:24px; height:24px; }
+
+  .text { flex:1; min-width:0; }
+  .title-line {
+    font-weight:700; font-size:13px; letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--txt-dim);
+    margin-bottom:4px;
+  }
+  .head-row {
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+    min-width:0;
+  }
+  .who {
+    font-weight:800; font-size:20px;
+    min-width:0;
+    overflow-wrap:anywhere;
+    word-break:break-word;
+  }
+  .sum {
+    font-weight:800; font-size:26px;
+    color: var(--accent);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 18px var(--accent-glow);
+    letter-spacing:0.01em;
+  }
+  .goal { color:var(--txt-dim); font-size:14px; margin-top:4px; }
+  .msg  {
+    font-size:18px; margin-top:8px;
+    white-space:pre-wrap; word-wrap:break-word;
+    font-style:italic; opacity:0.92;
+  }
+</style></head><body>
+<div id="stack"></div>
+<script>
+  const DONATTY_URL = 'http://localhost:5005/donatty';
+  const SHOW_MS  = 6000;
+  const LEAVE_MS = 220;
+  const QUEUE_MAX = 200;
+
+  const stack = document.getElementById('stack');
+  const queue = [];
+  let showing = false;
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtAmount(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return String(n ?? '');
+    const [intp, frac] = String(n).split('.');
+    const grouped = intp.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    return frac ? `${grouped},${frac}` : grouped;
+  }
+  const CURRENCY = { RUB:'₽', USD:'$', EUR:'€', UAH:'₴', BYN:'Br', KZT:'₸' };
+  function fmtCurrency(c) { return CURRENCY[c] || c || ''; }
+
+  // SVG монеты — наследует цвет от родителя через currentColor
+  const COIN_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9" fill="rgba(255,255,255,0.10)"/>
+    <path d="M12 7v10M9.5 9.5h3.5a1.5 1.5 0 0 1 0 3h-2a1.5 1.5 0 0 0 0 3h3.5"/>
+  </svg>`;
+
+  // Тир определяется суммой. Валюту тут не нормализуем — пороги в «попугаях»,
+  // подбирай под основную валюту канала (как правило, RUB).
+  function tierFor(amount) {
+    const n = Number(amount) || 0;
+    if (n >= 3000) return 'tier-epic';
+    if (n >= 1000) return 'tier-purple';
+    if (n >= 500)  return 'tier-gold';
+    if (n >= 100)  return 'tier-blue';
+    return 'tier-bronze';
+  }
+
+  function renderAlert(p) {
+    const d = document.createElement('div');
+    const tier = tierFor(p.amount);
+    d.className = `alert donation ${tier}`;
+    // Иконка наследует --accent через color
+    const who  = escapeHtml(p.user || 'Аноним');
+    const sum  = `${fmtAmount(p.amount)} ${fmtCurrency(p.currency)}`.trim();
+    const goal = p.goal ? `<div class="goal">на «${escapeHtml(p.goal)}»</div>` : '';
+    const msg  = p.message ? `<div class="msg">«${escapeHtml(p.message)}»</div>` : '';
+    d.innerHTML = `
+      <div class="row">
+        <div class="big-icon" style="color:var(--accent)">${COIN_SVG}</div>
+        <div class="text">
+          <div class="title-line">Новый донат</div>
+          <div class="head-row">
+            <span class="who">${who}</span>
+            <span class="sum">${escapeHtml(sum)}</span>
+          </div>
+          ${goal}${msg}
+        </div>
+      </div>`;
+    return d;
+  }
+
+  // --- Звук доната в стиле Windows Vista: металлический «звон монеты» с тремоло ---
+  const SOUND_VOLUME = 0.5; // единый уровень громкости для всех уведомлений
+  let audioCtx = null;
+  function ac() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+  function osc(freq, dur, mul, opts={}) {
+    const ctx = ac();
+    const { type='sine', delay=0, attack=0.004, detune=0 } = opts;
+    const t0 = ctx.currentTime + delay;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    if (detune) o.detune.value = detune;
+    o.connect(g); g.connect(ctx.destination);
+    const peak = Math.max(0.0002, SOUND_VOLUME * mul);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  // Короткий «cling» — высокая металлическая искра с дисперсными гармониками.
+  function cling(freq, dur, delay=0, mul=1) {
+    osc(freq,         dur,        0.80 * mul, { delay, attack: 0.001 });
+    osc(freq * 2.74,  dur * 0.45, 0.55 * mul, { delay: delay + 0.001, attack: 0.001 });
+    osc(freq * 5.41,  dur * 0.22, 0.30 * mul, { delay: delay + 0.001, attack: 0.001 });
+    osc(freq * 8.93,  dur * 0.10, 0.15 * mul, { delay: delay + 0.001, attack: 0.001 });
+  }
+  // Дрожание двух близких частот — эффект «вибрирующей монеты».
+  function tremolo(freq, dur, delay=0, mul=0.6) {
+    osc(freq, dur, mul,         { delay, attack: 0.005, detune: +8 });
+    osc(freq, dur, mul,         { delay, attack: 0.005, detune: -8 });
+    osc(freq * 2, dur * 0.7, mul * 0.4, { delay: delay + 0.002, attack: 0.005 });
+  }
+  // Обратная совместимость со старым API.
+  function tone(freq, dur, _type, _gain, delay=0) { cling(freq, dur, delay, 1); }
+  function chord(freqs, dur, _type, _gain, delay=0) { freqs.forEach(f => cling(f, dur, delay, 1 / Math.max(1, freqs.length / 1.5))); }
+
+  // Звон монетки: 2 быстрые искры → длинный вибрирующий «жетон».
+  function playDonationSound() {
+    cling(2637.02, 0.35, 0.00, 0.90);    // E7 — первая искра
+    cling(3520.00, 0.30, 0.06, 0.75);    // A7 — вторая, выше
+    tremolo(1318.51, 1.20, 0.14, 0.55);  // E6 — длинный «жужжащий» хвост
+    cling(2093.00, 0.80, 0.16, 0.50);    // C7 — поддержка
+  }
+
+  // --- Очередь модалок, привязанная к озвучке ----------------------------
+  // На каждый донат заводим entry с {payload, audio, audioDecided, waiters}.
+  // type:donation → новый entry в queue + byId. Модалка показывается → ждём
+  // type:tts с тем же donation_id (с таймаутом) → играем аудио → скрываем →
+  // следующий донат. Так модалка и TTS-аудио всегда вместе.
+  const byId = new Map();      // donation_id → entry
+  const TTS_WAIT_MAX = 5000;   // мс — макс ожидание TTS; синтез обычно <2с
+
+  function b64ToArrayBuffer(b64) {
+    const bin = atob(b64);
+    const buf = new ArrayBuffer(bin.length);
+    const view = new Uint8Array(buf);
+    for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+    return buf;
+  }
+  function playWavBlob(wav_b64) {
+    return new Promise(resolve => {
+      const ctx = ac();
+      Promise.resolve()
+        .then(() => ctx.decodeAudioData(b64ToArrayBuffer(wav_b64)))
+        .then(decoded => {
+          const src = ctx.createBufferSource();
+          src.buffer = decoded;
+          // Мягкие фейды по 20мс — без них слышен щелчок на старте/конце буфера
+          // (Silero не делает rampin/rampout, первый сэмпл может быть != 0).
+          const g = ctx.createGain();
+          const FADE = 0.02;
+          const t0 = ctx.currentTime;
+          const t1 = t0 + decoded.duration;
+          g.gain.setValueAtTime(0, t0);
+          g.gain.linearRampToValueAtTime(1, t0 + FADE);
+          g.gain.setValueAtTime(1, Math.max(t0 + FADE, t1 - FADE));
+          g.gain.linearRampToValueAtTime(0, t1);
+          src.connect(g).connect(ctx.destination);
+          src.onended = () => resolve();
+          src.start();
+          src.stop(t1 + 0.01);
+        })
+        .catch(err => { console.warn("[tts] decode/play failed:", err); resolve(); });
+    });
+  }
+
+  function newEntry(payload) {
+    return { payload, audio: null, audioDecided: false, waiters: [] };
+  }
+  function waitForAudio(entry, timeoutMs) {
+    if (entry.audioDecided) return Promise.resolve(entry.audio);
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        if (!entry.audioDecided) { entry.audioDecided = true; entry.audio = null; }
+        resolve(null);
+      }, timeoutMs);
+      entry.waiters.push(wav => { clearTimeout(timer); resolve(wav); });
+    });
+  }
+  function setAudio(donation_id, wav_b64) {
+    const entry = byId.get(donation_id);
+    if (!entry) return false;
+    entry.audio = wav_b64;
+    entry.audioDecided = true;
+    entry.waiters.forEach(fn => fn(wav_b64));
+    entry.waiters = [];
+    return true;
+  }
+  function markFailed(donation_id) {
+    const entry = byId.get(donation_id);
+    if (!entry) return;
+    entry.audioDecided = true;
+    entry.audio = null;
+    entry.waiters.forEach(fn => fn(null));
+    entry.waiters = [];
+  }
+
+  async function processQueue() {
+    if (showing) return;
+    const entry = queue.shift();
+    if (!entry) return;
+    showing = true;
+
+    const d = renderAlert(entry.payload);
+    stack.appendChild(d);
+    try { playDonationSound(); } catch (_) {}
+
+    // Время видимости = max(TTS playback, SHOW_MS). Если TTS пришёл —
+    // ждём пока он доиграет; если нет — выходим по SHOW_MS как раньше.
+    const tStart = performance.now();
+    const wav = await waitForAudio(entry, TTS_WAIT_MAX);
+    if (wav) {
+      await playWavBlob(wav);
+    } else {
+      // дожидаем недостающее до SHOW_MS (или закрываем сразу если уже дольше)
+      const elapsed = performance.now() - tStart;
+      const remaining = Math.max(0, SHOW_MS - elapsed);
+      if (remaining > 0) await new Promise(r => setTimeout(r, remaining));
+    }
+
+    if (entry.payload.id) byId.delete(entry.payload.id);
+
+    d.classList.add('leaving');
+    await new Promise(r => setTimeout(r, LEAVE_MS));
+    d.remove();
+    showing = false;
+    processQueue();
+  }
+
+  function addAlert(payload) {
+    if (queue.length >= QUEUE_MAX) {
+      const dropped = queue.shift();
+      if (dropped && dropped.payload && dropped.payload.id) byId.delete(dropped.payload.id);
+    }
+    const entry = newEntry(payload);
+    queue.push(entry);
+    if (payload.id) byId.set(payload.id, entry);
+    processQueue();
+  }
+
+  ['click', 'keydown', 'touchstart'].forEach(ev =>
+    window.addEventListener(ev, () => ac(), { once: true })
+  );
+
+  // Параллельная очередь TTS для событий БЕЗ donation_id (озвучка сообщений
+  // короля в чате — она не привязана к модалке, играет сама по себе).
+  const ttsLooseQueue = [];
+  let ttsLooseBusy = false;
+  async function ttsLoosePlayNext() {
+    if (ttsLooseBusy) return;
+    const job = ttsLooseQueue.shift();
+    if (!job) return;
+    ttsLooseBusy = true;
+    await playWavBlob(job.wav_b64);
+    ttsLooseBusy = false;
+    ttsLoosePlayNext();
+  }
+
+  const es = new EventSource(DONATTY_URL);
+  es.onmessage = (e) => {
+    try {
+      const m = JSON.parse(e.data);
+      if (!m) return;
+      if (m.type === 'donation') {
+        addAlert(m);
+      } else if (m.type === 'tts' && m.wav_b64) {
+        if (m.donation_id && setAudio(m.donation_id, m.wav_b64)) {
+          // привязалось к ждущей модалке — модалка сама вызовет playWavBlob
+        } else {
+          // king-message или донат уже ушёл из очереди — играем сразу
+          ttsLooseQueue.push(m);
+          ttsLoosePlayNext();
+        }
+      } else if (m.type === 'tts_failed') {
+        markFailed(m.donation_id);
+      }
+    } catch (_) {}
+  };
+</script></body></html>

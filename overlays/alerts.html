@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Alerts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --glass-bg:    rgba(20, 22, 32, 0.62);
+    --glass-bg-2:  rgba(40, 44, 60, 0.46);
+    --glass-brd:   rgba(255, 255, 255, 0.20);
+    --txt:         #f4f6fb;
+    --txt-dim:     rgba(244, 246, 251, 0.72);
+    --shadow:      0 12px 32px rgba(0,0,0,0.45),
+                   0 4px 10px  rgba(0,0,0,0.30);
+  }
+  html, body {
+    margin:0; padding:0; background:transparent; overflow:hidden;
+    color:var(--txt);
+    font:500 17px/1.4 Inter,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #stack {
+    position:fixed; inset:0;
+    display:flex; flex-direction:column-reverse;
+    align-items:center; justify-content:center;
+    gap:10px; padding:12px;
+  }
+
+  .alert {
+    position:relative;
+    box-sizing:border-box;
+    min-width:320px; max-width:540px;
+    padding:14px 18px 14px 22px;
+    border-radius:16px;
+    background:
+      linear-gradient(135deg, var(--glass-bg) 0%, var(--glass-bg-2) 100%);
+    border:1px solid var(--glass-brd);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    color:var(--txt);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+    --bar: rgba(255,255,255,0.30);
+    --glow-col: rgba(255,255,255,0.30);
+  }
+  .alert::before {
+    content:""; position:absolute; left:0; top:14px; bottom:14px;
+    width:3px; border-radius:3px;
+    background:var(--bar);
+    box-shadow: 0 0 14px var(--bar);
+  }
+
+  /* анимации */
+  @keyframes alertIn {
+    from { opacity:0; transform:translateY(14px) scale(0.96); filter:blur(6px); }
+    to   { opacity:1; transform:none; filter:none; }
+  }
+  @keyframes alertOut {
+    from { opacity:1; transform:none; filter:none; }
+    to   { opacity:0; transform:translateY(-8px) scale(0.98); filter:blur(6px); }
+  }
+  .alert         { animation: alertIn 260ms cubic-bezier(.2,.7,.2,1) both; }
+  .alert.leaving { animation: alertOut 220ms ease-in both; }
+
+  .row {
+    display:flex; align-items:center; gap:14px;
+  }
+  .big-icon {
+    width:40px; height:40px; flex:0 0 40px;
+    border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    background: radial-gradient(circle at 30% 30%,
+      rgba(255,255,255,0.15) 0%, rgba(0,0,0,0.25) 100%);
+    border:1px solid rgba(255,255,255,0.18);
+    box-shadow: 0 0 18px var(--glow-col),
+                inset 0 1px 0 rgba(255,255,255,0.18);
+  }
+  .big-icon svg { width:22px; height:22px; display:block; }
+  .text { flex:1; min-width:0; }
+  .text .title-line {
+    font-weight:700; font-size:13px; letter-spacing:0.06em;
+    text-transform:uppercase;
+    color:var(--txt-dim);
+    margin-bottom:2px;
+  }
+  .text .body-line {
+    font-weight:600; font-size:18px; line-height:1.35;
+    overflow-wrap:anywhere; word-break:break-word;
+  }
+  .text .body-line strong { font-weight:800; }
+  .text .sub {
+    font-weight:500; font-size:18px; opacity:0.92;
+    margin-top:6px; font-style:italic;
+    overflow-wrap:anywhere; word-break:break-word;
+  }
+
+  /* --- Темы по типу события --- */
+  .alert.follow {
+    --bar: #ffd76a;
+    --glow-col: rgba(255,215,106,0.45);
+    background:
+      linear-gradient(135deg, rgba(140, 100, 20, 0.50) 0%, rgba(40, 44, 60, 0.46) 70%);
+  }
+  .alert.sub, .alert.resub, .alert.subgift {
+    --bar: #ff7aa8;
+    --glow-col: rgba(255,122,168,0.45);
+    background:
+      linear-gradient(135deg, rgba(160, 40, 100, 0.50) 0%, rgba(40, 44, 60, 0.46) 70%);
+  }
+  .alert.raid {
+    --bar: #ff8a3d;
+    --glow-col: rgba(255,138,61,0.55);
+    background:
+      linear-gradient(135deg, rgba(180, 70, 20, 0.50) 0%, rgba(40, 44, 60, 0.46) 70%);
+  }
+</style></head><body>
+<div id="stack"></div>
+<script>
+  const EVENTS_URL = 'http://localhost:5005/events';
+  const SHOW_MS = 4000;
+  const LEAVE_MS = 220;
+  const QUEUE_MAX = 500;
+  function priorityOf(p) {
+    if (p.type === 'raid')    return 0;
+    if (p.type === 'subgift') return 1;
+    if (p.type === 'resub')   return 2;
+    if (p.type === 'sub')     return p.gift ? 4 : 3;
+    return 5;
+  }
+  const PRIORITY_LEVELS = 6;
+  const stack = document.getElementById('stack');
+  const queues = Array.from({length: PRIORITY_LEVELS}, () => []);
+  let showing = false;
+
+  function pluralRu(n, one, few, many) {
+    const a = Math.abs(n) % 100;
+    if (a > 10 && a < 20) return many;
+    const b = a % 10;
+    if (b === 1) return one;
+    if (b >= 2 && b <= 4) return few;
+    return many;
+  }
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // SVG-иконки в стиле "тонкая обводка + лёгкая заливка"
+  const ICONS = {
+    follow: `<svg viewBox="0 0 24 24" fill="none" stroke="#ffd76a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12,3 14.6,9.3 21,9.9 16,14.3 17.5,21 12,17.6 6.5,21 8,14.3 3,9.9 9.4,9.3" fill="rgba(255,215,106,0.25)"/></svg>`,
+    sub:    `<svg viewBox="0 0 24 24" fill="none" stroke="#ff7aa8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-4.7-7-11a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 6.3-7 11-7 11z" fill="rgba(255,122,168,0.25)"/></svg>`,
+    raid:   `<svg viewBox="0 0 24 24" fill="none" stroke="#ff8a3d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10v4h3l5 4V6L6 10H3z" fill="rgba(255,138,61,0.25)"/><path d="M16 8a5 5 0 0 1 0 8M19 5a9 9 0 0 1 0 14"/></svg>`,
+  };
+  function iconFor(type) {
+    if (type === 'follow') return ICONS.follow;
+    if (type === 'raid')   return ICONS.raid;
+    return ICONS.sub;
+  }
+
+  function renderAlert(payload) {
+    const d = document.createElement('div');
+    d.className = 'alert ' + payload.type;
+    let title = '', body = '';
+    if (payload.type === 'follow') {
+      title = 'Новый фолловер';
+      body = `<strong>${escapeHtml(payload.user)}</strong> теперь следит за каналом`;
+    } else if (payload.type === 'sub') {
+      const tierMap = {'1000': 'Уровень 1', '2000': 'Уровень 2', '3000': 'Уровень 3'};
+      const tier = tierMap[payload.tier] || (payload.tier ? `Уровень ${payload.tier}` : '');
+      title = payload.gift ? 'Подарочная подписка' : 'Новая подписка';
+      const action = payload.gift ? 'получил подарочную подписку' : 'подписался';
+      body = `<strong>${escapeHtml(payload.user)}</strong> ${action}${tier ? ' · ' + escapeHtml(tier) : ''}`;
+    } else if (payload.type === 'resub') {
+      const tierMap = {'1000': 'Уровень 1', '2000': 'Уровень 2', '3000': 'Уровень 3'};
+      const tier = tierMap[payload.tier] || (payload.tier ? `Уровень ${payload.tier}` : '');
+      const months = payload.months || 0;
+      title = 'Продление подписки';
+      const sub = `с нами уже ${months} мес.${tier ? ' · ' + escapeHtml(tier) : ''}`;
+      const msg = payload.message ? `<div class="sub">«${escapeHtml(payload.message)}»</div>` : '';
+      body = `<strong>${escapeHtml(payload.user)}</strong> ${sub}${msg}`;
+    } else if (payload.type === 'raid') {
+      const viewers = payload.viewers || 0;
+      const word = pluralRu(viewers, 'зритель', 'зрителя', 'зрителей');
+      title = 'РЕЙД';
+      body = `<strong>${escapeHtml(payload.user)}</strong> привёл ${viewers} ${word}`;
+    } else if (payload.type === 'subgift') {
+      const tierMap = {'1000': 'Уровень 1', '2000': 'Уровень 2', '3000': 'Уровень 3'};
+      const tier = tierMap[payload.tier] || (payload.tier ? `Уровень ${payload.tier}` : '');
+      const total = payload.total || 0;
+      title = 'Подарок сообществу';
+      const word = pluralRu(total, 'подписку', 'подписки', 'подписок');
+      body = `<strong>${escapeHtml(payload.user)}</strong> подарил ${total} ${word}${tier ? ' · ' + escapeHtml(tier) : ''}`;
+    } else {
+      title = payload.type;
+      body = escapeHtml(JSON.stringify(payload));
+    }
+    d.innerHTML = `
+      <div class="row">
+        <div class="big-icon">${iconFor(payload.type)}</div>
+        <div class="text">
+          <div class="title-line">${escapeHtml(title)}</div>
+          <div class="body-line">${body}</div>
+        </div>
+      </div>`;
+    return d;
+  }
+
+  // --- Звуки в стиле Windows Vista через Web Audio API ---
+  // У каждого уведомления свой тембр и характер, общая мастер-громкость одна.
+  const SOUND_VOLUME = 0.5; // единый уровень громкости для всех уведомлений
+  let audioCtx = null;
+  function ac() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+  // Низкоуровневый осциллятор с ADSR-конвертом. mul — относительная амплитуда.
+  function osc(freq, dur, mul, opts={}) {
+    const ctx = ac();
+    const { type='sine', delay=0, attack=0.006, detune=0 } = opts;
+    const t0 = ctx.currentTime + delay;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    if (detune) o.detune.value = detune;
+    o.connect(g); g.connect(ctx.destination);
+    const peak = Math.max(0.0002, SOUND_VOLUME * mul);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+
+  // === ТЕМБРЫ ===
+  // 1) Стеклянный колокольчик — яркий, металлический, долгое затухание (sub/follow).
+  function glass(freq, dur, delay=0, mul=1) {
+    osc(freq,        dur,        1.00 * mul, { delay, attack: 0.004 });
+    osc(freq * 2,    dur * 0.80, 0.50 * mul, { delay: delay + 0.002, attack: 0.004 });
+    osc(freq * 3.01, dur * 0.45, 0.22 * mul, { delay: delay + 0.004, attack: 0.004 });
+    osc(freq * 4.97, dur * 0.25, 0.10 * mul, { delay: delay + 0.005, attack: 0.003 });
+  }
+  // 2) Маримба — деревянный, очень короткий, мягкий (resub).
+  function marimba(freq, dur, delay=0, mul=1) {
+    osc(freq,     dur,        1.00 * mul, { type: 'sine',     delay, attack: 0.003 });
+    osc(freq * 4, dur * 0.10, 0.45 * mul, { type: 'triangle', delay, attack: 0.001 }); // короткий «удар»
+    osc(freq * 2, dur * 0.45, 0.25 * mul, { type: 'sine',     delay: delay + 0.002, attack: 0.003 });
+  }
+  // 3) Glockenspiel — очень яркий и тонкий звон, дисперсия гармоник (subgift).
+  function glock(freq, dur, delay=0, mul=1) {
+    osc(freq,         dur,        0.80 * mul, { delay, attack: 0.002 });
+    osc(freq * 2.76,  dur * 0.55, 0.65 * mul, { delay: delay + 0.001, attack: 0.002 });
+    osc(freq * 5.40,  dur * 0.30, 0.30 * mul, { delay: delay + 0.002, attack: 0.002 });
+  }
+  // 4) Пэд — мягкое медитативное вступление с медленной атакой (raid, как logon Vista).
+  function pad(freq, dur, delay=0, mul=1) {
+    osc(freq,     dur,        0.85 * mul, { type: 'sine',     delay, attack: 0.18 });
+    osc(freq,     dur,        0.40 * mul, { type: 'sine',     delay, attack: 0.20, detune: +6 });
+    osc(freq,     dur,        0.40 * mul, { type: 'sine',     delay, attack: 0.20, detune: -6 });
+    osc(freq * 2, dur * 0.85, 0.30 * mul, { type: 'triangle', delay: delay + 0.03, attack: 0.12 });
+  }
+  // 5) Воздушный «вздох» — очень тихий sine для пред-атаки (follow).
+  function whoosh(freq, dur, delay=0, mul=0.25) {
+    osc(freq, dur, mul, { type: 'sine', delay, attack: 0.05, detune: +4 });
+    osc(freq, dur, mul, { type: 'sine', delay, attack: 0.05, detune: -4 });
+  }
+  // Обратная совместимость со старым API.
+  function tone(freq, dur, _type, _gain, delay=0) { glass(freq, dur, delay, 1); }
+  function chord(freqs, dur, _type, _gain, delay=0) { freqs.forEach(f => glass(f, dur, delay, 1 / Math.max(1, freqs.length / 1.5))); }
+
+  // === МОТИВЫ ===
+  // Каждое уведомление узнаваемо: разный тембр, регистр, направление мелодии и длительность.
+  const SOUNDS = {
+    // FOLLOW — короткий «вздох → динь» в верхнем регистре. Едва заметный, дружелюбный.
+    follow:  () => {
+      whoosh(1760, 0.18, 0.00, 0.18);                  // A6 — лёгкий «вдох»
+      glass(2093.00, 0.90, 0.10, 0.95);                // C7 — одиночный высокий звон
+    },
+    // SUB — тёплая маримба, восходящая малая терция (mid-регистр). Короткий и «деревянный».
+    sub:     (p) => p.gift
+      ? ( marimba(987.77, 0.45, 0.00, 0.95),           // B5
+          marimba(1318.51, 0.55, 0.08, 0.90) )         // E6 — кварта
+      : ( marimba(659.25, 0.55, 0.00, 1.00),           // E5
+          marimba(783.99, 0.70, 0.10, 0.95) ),         // G5 — м. терция
+    // RESUB — спокойная нисходящая фраза (D–B–G), медитативная, длинные хвосты.
+    resub:   () => {
+      glass(1174.66, 1.20, 0.00, 0.85);                // D6
+      glass( 987.77, 1.30, 0.28, 0.85);                // B5
+      glass( 783.99, 1.60, 0.56, 0.90);                // G5
+    },
+    // SUBGIFT — яркий glockenspiel-«sparkle»: быстрая восходящая пентатоника + мерцание.
+    subgift: () => {
+      glock(1568.00, 0.50, 0.00,  0.85);               // G6
+      glock(1760.00, 0.50, 0.08,  0.85);               // A6
+      glock(2093.00, 0.55, 0.16,  0.90);               // C7
+      glock(2637.02, 0.70, 0.24,  0.90);               // E7
+      glock(3520.00, 1.00, 0.32,  0.55);               // A7 — искра
+    },
+    // RAID — медленный кинематографичный пэд + поздняя фанфара. Самый «эпичный» и узнаваемо vista-логонный.
+    raid:    () => {
+      pad( 196.00, 2.20, 0.00, 1.00);                  // G3 — басовая подушка
+      pad( 293.66, 2.00, 0.10, 0.80);                  // D4
+      pad( 392.00, 1.80, 0.20, 0.70);                  // G4
+      glass(1567.98, 1.40, 0.70, 0.90);                // G6 — звонкий «выход»
+      glass(1975.53, 1.50, 0.90, 0.85);                // B6
+      glass(2349.32, 1.80, 1.10, 0.85);                // D7
+      glock(3136.00, 1.20, 1.20, 0.45);                // G7 — финальная искра
+    },
+  };
+  function playFor(payload) {
+    const fn = SOUNDS[payload.type];
+    if (fn) try { fn(payload); } catch (_) {}
+  }
+
+  function processQueue() {
+    if (showing) return;
+    let payload = null;
+    for (const q of queues) {
+      if (q.length) { payload = q.shift(); break; }
+    }
+    if (!payload) return;
+    showing = true;
+    const d = renderAlert(payload);
+    stack.appendChild(d);
+    playFor(payload);
+    setTimeout(() => {
+      d.classList.add('leaving');
+      setTimeout(() => {
+        d.remove();
+        showing = false;
+        processQueue();
+      }, LEAVE_MS);
+    }, SHOW_MS);
+  }
+
+  function addAlert(payload) {
+    const q = queues[priorityOf(payload)];
+    if (q.length >= QUEUE_MAX) q.shift();
+    q.push(payload);
+    processQueue();
+  }
+
+  ['click', 'keydown', 'touchstart'].forEach(ev =>
+    window.addEventListener(ev, () => ac(), { once: true })
+  );
+
+  const es = new EventSource(EVENTS_URL);
+  es.addEventListener('config', () => {});
+  es.onmessage = (e) => {
+    try {
+      const m = JSON.parse(e.data);
+      if (m && m.type) addAlert(m);
+    } catch (_) {}
+  };
+</script></body></html>
