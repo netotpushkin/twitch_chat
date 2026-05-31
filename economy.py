@@ -162,6 +162,19 @@ def start_flusher():
 
 # ---------- Публичный API ----------
 
+def _award_locked(uid, amount, login, display):
+    """Внутренняя: начисление под уже взятым _lock. Возвращает новый баланс."""
+    e = _entry(uid)
+    if login is not None:
+        e["login"] = login.lower()
+    if display:
+        e["display"] = display
+    e["balance"] += amount
+    e["earned"] += amount
+    e["last_seen_ts"] = time.time()
+    return e["balance"]
+
+
 def award(user_id, amount, reason="", login=None, display=None):
     """Начислить amount монет user_id'у. login/display обновляются если переданы.
     Возвращает новый баланс или None если данных не хватило."""
@@ -169,16 +182,8 @@ def award(user_id, amount, reason="", login=None, display=None):
     if not user_id or amount <= 0:
         return None
     with _lock:
-        e = _entry(user_id)
-        if login is not None:
-            e["login"] = login.lower()
-        if display:
-            e["display"] = display
-        e["balance"] += amount
-        e["earned"] += amount
-        e["last_seen_ts"] = time.time()
+        bal = _award_locked(user_id, amount, login, display)
         _dirty = True
-        bal = e["balance"]
     if reason:
         log.log(f"(economy) +{amount} → {login or user_id} ({reason}), баланс={bal}")
     return bal
@@ -215,16 +220,23 @@ def award_chat(user_id, login, display):
 
 
 def award_follow(user_id, login=None, display=None):
-    """Follow-бонус с дедупом: один раз на user_id за всё время."""
+    """Follow-бонус с дедупом: один раз на user_id за всё время.
+    Дедуп и начисление атомарны — иначе флашер может сохранить «бонус выдан»
+    без самого баланса, и при крахе юзер потеряет монеты навсегда."""
     global _dirty
     if not user_id:
+        return None
+    amount = RATES["follow"]
+    if amount <= 0:
         return None
     with _lock:
         if user_id in _follow_bonus_received:
             return None
+        bal = _award_locked(user_id, amount, login, display)
         _follow_bonus_received.add(user_id)
         _dirty = True
-    return award(user_id, RATES["follow"], "follow", login, display)
+    log.log(f"(economy) +{amount} → {login or user_id} (follow), баланс={bal}")
+    return bal
 
 
 def award_watchtime(uids_to_info):

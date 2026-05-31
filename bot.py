@@ -192,6 +192,9 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
         if sock_holder["s"] is None:
             prompt.print("(нет коннекта, сообщение не отправлено)")
             return
+        # Защита от IRC command injection: \r\n в msg от LLM/доната/титлера/кинга
+        # иначе сформируют вторую команду внутри PRIVMSG.
+        msg = msg.replace("\r", " ").replace("\n", " ")
         waited = limiter.acquire()
         if waited > 0:
             prompt.print(f"(rate-limit: ждал {waited:.1f}с)")

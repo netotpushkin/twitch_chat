@@ -176,18 +176,19 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             body = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         if body:
             try: self.wfile.write(body)
             except OSError: pass
 
     def _serve_stream(self, bus, send_config=False):
+        # БЕЗ Access-Control-Allow-Origin: оверлеи открываются с того же origin
+        # (localhost:OVERLAY_PORT), OBS Browser Source CORS не проверяет.
+        # ACAO:* позволял бы любому открытому сайту читать чат/донаты в реальном времени.
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         if send_config:
             cfg = json.dumps({"channel": CHANNEL.lstrip("#")}, ensure_ascii=False)
