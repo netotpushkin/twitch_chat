@@ -1,14 +1,19 @@
-"""Экономика монет: in-memory стор + персист в state/coins.json.
+"""Экономика монет: SQLite-стор в state/coins.db.
 
 Идентификатор зрителя — Twitch user_id (стабилен при смене ника). Логин/дисплей
 храним для отображения и для команд вида '!дать @ник'.
 
 Дефолтные ставки в RATES; если есть state/economy.json — мержим поверх с
 hot-reload по mtime (проверяется на каждом тике watchtime).
+
+Один process-wide соединение в WAL-режиме под глобальным локом: пишущих потоков
+немного (IRC-loop, watchtime-тикер, EventSub-листенер), нагрузка маленькая,
+блокировка пренебрежима. WAL даёт durability без двойных записей.
 """
 
 import json
 import os
+import sqlite3
 import threading
 import time
 
@@ -71,119 +76,104 @@ def _maybe_reload_rates():
 
 # ---------- Стор ----------
 
-_COINS_FILE = os.path.join(STATE_DIR, "coins.json")
-
-# user_id -> {"login", "display", "balance", "earned", "last_msg_ts", "last_seen_ts"}
-_users: dict[str, dict] = {}
-# user_id'ы, уже получившие follow-бонус (защита от анфолл/рефолл фарма)
-_follow_bonus_received: set[str] = set()
+_DB_FILE = os.path.join(STATE_DIR, "coins.db")
+_conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
-_dirty = False
 
 
-def _entry(uid):
-    """Внутренняя: получить/создать запись. Лочить снаружи."""
-    e = _users.get(uid)
-    if e is None:
-        e = {"login": "", "display": "", "balance": 0, "earned": 0,
-             "last_msg_ts": 0.0, "last_seen_ts": 0.0}
-        _users[uid] = e
-    return e
+def _init_schema():
+    # journal_mode=WAL — параллельные чтения не блокируются записью; кэш-страницы
+    # пишутся в .db-wal и подмерживаются периодически. synchronous=NORMAL — fsync
+    # на каждый commit пропускается, при kill -9 теряем максимум последний commit,
+    # БД остаётся целостной.
+    _conn.executescript("""
+        PRAGMA journal_mode=WAL;
+        PRAGMA synchronous=NORMAL;
+        CREATE TABLE IF NOT EXISTS users (
+            uid          TEXT PRIMARY KEY,
+            login        TEXT NOT NULL DEFAULT '',
+            display      TEXT NOT NULL DEFAULT '',
+            balance      INTEGER NOT NULL DEFAULT 0,
+            earned       INTEGER NOT NULL DEFAULT 0,
+            last_msg_ts  REAL    NOT NULL DEFAULT 0,
+            last_seen_ts REAL    NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_users_login ON users(login);
+        CREATE TABLE IF NOT EXISTS follow_bonus (
+            uid TEXT PRIMARY KEY
+        );
+    """)
 
 
 def load():
-    """Прочитать state/coins.json в память. Зовётся один раз на старте."""
-    global _dirty
+    """Открыть state/coins.db, создать схему. Зовётся один раз на старте."""
+    global _conn
     _maybe_reload_rates()
-    if not os.path.exists(_COINS_FILE):
-        _dirty = False
-        return
-    try:
-        with open(_COINS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        log.log(f"(economy) не удалось прочитать coins.json: {e} — старт с нуля")
-        return
-    with _lock:
-        for uid, rec in (data.get("users") or {}).items():
-            if not isinstance(rec, dict):
-                continue
-            _users[uid] = {
-                "login":        str(rec.get("login", "")).lower(),
-                "display":      str(rec.get("display", "")),
-                "balance":      int(rec.get("balance", 0)),
-                "earned":       int(rec.get("earned", 0)),
-                "last_msg_ts":  float(rec.get("last_msg_ts", 0.0)),
-                "last_seen_ts": float(rec.get("last_seen_ts", 0.0)),
-            }
-        for uid in data.get("follow_bonus", []) or []:
-            _follow_bonus_received.add(str(uid))
-    _dirty = False
-    log.log(f"(economy) загружено {len(_users)} аккаунтов")
-
-
-def _snapshot():
-    """Снимок для записи на диск. Лочить снаружи."""
-    return {
-        "users": _users,
-        "follow_bonus": sorted(_follow_bonus_received),
-    }
-
-
-def save():
-    """Атомарная запись на диск. Пропускает, если ничего не менялось."""
-    global _dirty
-    with _lock:
-        if not _dirty:
-            return
-        snap = json.dumps(_snapshot(), ensure_ascii=False)
-        _dirty = False
-    tmp = _COINS_FILE + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(snap)
-        os.replace(tmp, _COINS_FILE)
-    except OSError as e:
-        log.log(f"(economy) ошибка записи coins.json: {e}")
-
-
-def _flusher():
-    while True:
-        time.sleep(30)
-        try:
-            save()
-        except Exception as e:
-            log.log(f"(economy) flusher: {e}")
+    # check_same_thread=False — соединение шерим между потоками; сериализация
+    # лежит на _lock. isolation_level=None (autocommit) — управляем транзакциями
+    # явно через BEGIN IMMEDIATE / COMMIT внутри _tx().
+    _conn = sqlite3.connect(_DB_FILE, check_same_thread=False, isolation_level=None)
+    _init_schema()
+    n = _conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    log.log(f"(economy) БД {_DB_FILE} открыта, {n} аккаунтов")
 
 
 def start_flusher():
-    threading.Thread(target=_flusher, daemon=True, name="coins-flusher").start()
+    """Совместимость со старым API: с SQLite каждый award уже на диске,
+    периодический flush не нужен. Оставлено no-op чтобы bot.py не менять."""
+    pass
+
+
+# ---------- helpers ----------
+
+class _tx:
+    """`with _tx():` — атомарная транзакция под _lock. Без вложенности.
+    BEGIN IMMEDIATE сразу берёт write-lock БД — другие writers подождут;
+    реальная сериализация и так на _lock, это страховка."""
+    def __enter__(self):
+        _lock.acquire()
+        _conn.execute("BEGIN IMMEDIATE")
+        return _conn
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                _conn.execute("COMMIT")
+            else:
+                _conn.execute("ROLLBACK")
+        finally:
+            _lock.release()
+
+
+def _upsert_meta(uid, login, display):
+    """Создаёт строку для uid если её нет, обновляет login/display только если
+    они переданы непустыми. Должно вызываться внутри _tx()."""
+    _conn.execute("INSERT OR IGNORE INTO users(uid) VALUES (?)", (uid,))
+    if login:
+        _conn.execute("UPDATE users SET login=? WHERE uid=?", (login.lower(), uid))
+    if display:
+        _conn.execute("UPDATE users SET display=? WHERE uid=?", (display, uid))
+
+
+def _balance_of(uid):
+    """Под _tx() — текущий баланс."""
+    row = _conn.execute("SELECT balance FROM users WHERE uid=?", (uid,)).fetchone()
+    return row[0] if row else 0
 
 
 # ---------- Публичный API ----------
 
-def _award_locked(uid, amount, login, display):
-    """Внутренняя: начисление под уже взятым _lock. Возвращает новый баланс."""
-    e = _entry(uid)
-    if login is not None:
-        e["login"] = login.lower()
-    if display:
-        e["display"] = display
-    e["balance"] += amount
-    e["earned"] += amount
-    e["last_seen_ts"] = time.time()
-    return e["balance"]
-
-
 def award(user_id, amount, reason="", login=None, display=None):
     """Начислить amount монет user_id'у. login/display обновляются если переданы.
     Возвращает новый баланс или None если данных не хватило."""
-    global _dirty
     if not user_id or amount <= 0:
         return None
-    with _lock:
-        bal = _award_locked(user_id, amount, login, display)
-        _dirty = True
+    now = time.time()
+    with _tx():
+        _upsert_meta(user_id, login, display)
+        _conn.execute(
+            "UPDATE users SET balance=balance+?, earned=earned+?, last_seen_ts=? WHERE uid=?",
+            (amount, amount, now, user_id))
+        bal = _balance_of(user_id)
     if reason:
         log.log(f"(economy) +{amount} → {login or user_id} ({reason}), баланс={bal}")
     return bal
@@ -191,7 +181,6 @@ def award(user_id, amount, reason="", login=None, display=None):
 
 def award_chat(user_id, login, display):
     """Бонус за сообщение в чате с кулдауном. Возвращает True если начислили."""
-    global _dirty
     if not user_id:
         return False
     amount = RATES["chat_message"]
@@ -199,42 +188,43 @@ def award_chat(user_id, login, display):
     if amount <= 0:
         return False
     now = time.time()
-    with _lock:
-        e = _entry(user_id)
-        if login:
-            e["login"] = login.lower()
-        if display:
-            e["display"] = display
-        if now - e["last_msg_ts"] < cooldown:
-            # Кулдаун — только обновляем тайминги, баланс не трогаем и стор не дёргаем
-            # (иначе на каждом сообщении в чате 30с-флашер переписывал бы coins.json).
-            e["last_msg_ts"] = now
-            e["last_seen_ts"] = now
+    with _tx():
+        _upsert_meta(user_id, login, display)
+        row = _conn.execute(
+            "SELECT last_msg_ts FROM users WHERE uid=?", (user_id,)
+        ).fetchone()
+        last = row[0] if row else 0.0
+        if now - last < cooldown:
+            # Кулдаун — обновляем только тайминги, баланс не трогаем.
+            _conn.execute(
+                "UPDATE users SET last_msg_ts=?, last_seen_ts=? WHERE uid=?",
+                (now, now, user_id))
             return False
-        e["balance"] += amount
-        e["earned"] += amount
-        e["last_msg_ts"] = now
-        e["last_seen_ts"] = now
-        _dirty = True
+        _conn.execute(
+            "UPDATE users SET balance=balance+?, earned=earned+?, last_msg_ts=?, last_seen_ts=? WHERE uid=?",
+            (amount, amount, now, now, user_id))
     return True
 
 
 def award_follow(user_id, login=None, display=None):
     """Follow-бонус с дедупом: один раз на user_id за всё время.
-    Дедуп и начисление атомарны — иначе флашер может сохранить «бонус выдан»
-    без самого баланса, и при крахе юзер потеряет монеты навсегда."""
-    global _dirty
+    INSERT OR IGNORE + UPDATE в одной транзакции — либо обе записи на диске,
+    либо ни одной; повторный fold не даст бонус, потерянный bonus невозможен."""
     if not user_id:
         return None
     amount = RATES["follow"]
     if amount <= 0:
         return None
-    with _lock:
-        if user_id in _follow_bonus_received:
+    now = time.time()
+    with _tx():
+        cur = _conn.execute("INSERT OR IGNORE INTO follow_bonus(uid) VALUES (?)", (user_id,))
+        if cur.rowcount == 0:
             return None
-        bal = _award_locked(user_id, amount, login, display)
-        _follow_bonus_received.add(user_id)
-        _dirty = True
+        _upsert_meta(user_id, login, display)
+        _conn.execute(
+            "UPDATE users SET balance=balance+?, earned=earned+?, last_seen_ts=? WHERE uid=?",
+            (amount, amount, now, user_id))
+        bal = _balance_of(user_id)
     log.log(f"(economy) +{amount} → {login or user_id} (follow), баланс={bal}")
     return bal
 
@@ -242,7 +232,6 @@ def award_follow(user_id, login=None, display=None):
 def award_watchtime(uids_to_info):
     """uids_to_info: {user_id: (login, display)} — из /chat/chatters.
     Каждому +watchtime_base, активным (писал недавно) ещё +watchtime_active."""
-    global _dirty
     base = RATES["watchtime_base"]
     active_bonus = RATES["watchtime_active"]
     active_window = RATES["watchtime_active_sec"]
@@ -251,73 +240,74 @@ def award_watchtime(uids_to_info):
     now = time.time()
     given = 0
     active = 0
-    with _lock:
+    with _tx():
         for uid, (login, display) in uids_to_info.items():
             if not uid:
                 continue
-            e = _entry(uid)
-            if login:
-                e["login"] = login.lower()
-            if display:
-                e["display"] = display
+            _upsert_meta(uid, login, display)
+            row = _conn.execute(
+                "SELECT last_msg_ts FROM users WHERE uid=?", (uid,)
+            ).fetchone()
+            last = row[0] if row else 0.0
             amount = base
-            if now - e["last_msg_ts"] < active_window:
+            if now - last < active_window:
                 amount += active_bonus
                 active += 1
             if amount > 0:
-                e["balance"] += amount
-                e["earned"] += amount
-                e["last_seen_ts"] = now
+                _conn.execute(
+                    "UPDATE users SET balance=balance+?, earned=earned+?, last_seen_ts=? WHERE uid=?",
+                    (amount, amount, now, uid))
                 given += 1
-        if given:
-            _dirty = True
     return given, active
 
 
 def balance(user_id):
     with _lock:
-        e = _users.get(user_id)
-        return e["balance"] if e else 0
+        row = _conn.execute(
+            "SELECT balance FROM users WHERE uid=?", (user_id,)
+        ).fetchone()
+    return row[0] if row else 0
 
 
 def balance_by_login(login):
-    """Поиск по нику (лог-н ниже регистром)."""
+    """Поиск по нику (лог-ин ниже регистром). O(log n) через idx_users_login."""
     login = (login or "").lstrip("@").lower()
     if not login:
         return None
     with _lock:
-        for e in _users.values():
-            if e["login"] == login:
-                return e["balance"]
-    return None
+        row = _conn.execute(
+            "SELECT balance FROM users WHERE login=? LIMIT 1", (login,)
+        ).fetchone()
+    return row[0] if row else None
 
 
 def transfer(from_uid, to_login, amount):
     """Перевод по нику получателя. Возвращает (ok: bool, msg: str)."""
-    global _dirty
     if amount <= 0:
         return False, "сумма должна быть больше 0"
     to_login = (to_login or "").lstrip("@").lower()
     if not to_login:
         return False, "укажи получателя: !дать @ник N"
-    with _lock:
-        src = _users.get(from_uid)
-        if not src or src["balance"] < amount:
-            return False, f"недостаточно монет (у тебя {src['balance'] if src else 0})"
-        if src["login"] == to_login:
+    with _tx():
+        src = _conn.execute(
+            "SELECT login, balance FROM users WHERE uid=?", (from_uid,)
+        ).fetchone()
+        src_bal = src[1] if src else 0
+        if not src or src_bal < amount:
+            return False, f"недостаточно монет (у тебя {src_bal})"
+        if src[0] == to_login:
             return False, "нельзя переводить самому себе"
-        dst = None
-        for e in _users.values():
-            if e["login"] == to_login:
-                dst = e
-                break
-        if dst is None:
+        dst = _conn.execute(
+            "SELECT uid, display, login FROM users WHERE login=? LIMIT 1", (to_login,)
+        ).fetchone()
+        if not dst:
             return False, f"@{to_login} ещё ни разу не появлялся, ему пока некуда переводить"
-        src["balance"] -= amount
-        dst["balance"] += amount
-        dst["earned"] += amount  # для зрителя это «доход», для лидерборда логично учесть
-        _dirty = True
-        dst_disp = dst["display"] or dst["login"]
+        _conn.execute(
+            "UPDATE users SET balance=balance-? WHERE uid=?", (amount, from_uid))
+        _conn.execute(
+            "UPDATE users SET balance=balance+?, earned=earned+? WHERE uid=?",
+            (amount, amount, dst[0]))
+        dst_disp = dst[1] or dst[2]
     return True, f"перевёл {amount} → @{dst_disp}"
 
 
@@ -347,7 +337,9 @@ def run_watchtime_ticker(token, broadcaster_id, moderator_id):
 def top(n=5):
     """Топ-N по балансу. Возвращает список (display_or_login, balance)."""
     with _lock:
-        rows = [(e["display"] or e["login"], e["balance"])
-                for e in _users.values() if e["balance"] > 0]
-    rows.sort(key=lambda x: -x[1])
-    return rows[:n]
+        rows = _conn.execute(
+            "SELECT COALESCE(NULLIF(display, ''), login) AS name, balance "
+            "FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT ?",
+            (n,)
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows]
