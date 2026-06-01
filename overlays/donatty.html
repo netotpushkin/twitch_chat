@@ -258,7 +258,9 @@
     for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
     return buf;
   }
-  function playWavBlob(wav_b64) {
+  // Если на playback повесили handle (опц. {ref}) — записываем туда src/gain,
+  // чтобы вызывающий мог прервать воспроизведение (stopPlayback(handle)).
+  function playWavBlob(wav_b64, handle) {
     return new Promise(resolve => {
       const ctx = ac();
       Promise.resolve()
@@ -266,10 +268,11 @@
         .then(decoded => {
           const src = ctx.createBufferSource();
           src.buffer = decoded;
-          // Мягкие фейды по 20мс — без них слышен щелчок на старте/конце буфера
-          // (Silero не делает rampin/rampout, первый сэмпл может быть != 0).
+          // Заметные фейды на вход/выход (100мс): мягкое нарастание/затухание
+          // приятнее, чем резкий старт, и одновременно убирает щелчок (Silero
+          // не делает rampin/rampout, первый сэмпл может быть != 0).
           const g = ctx.createGain();
-          const FADE = 0.02;
+          const FADE = 0.10;
           const t0 = ctx.currentTime;
           const t1 = t0 + decoded.duration;
           g.gain.setValueAtTime(0, t0);
@@ -280,9 +283,27 @@
           src.onended = () => resolve();
           src.start();
           src.stop(t1 + 0.01);
+          if (handle) { handle.src = src; handle.gain = g; handle.ctx = ctx; }
         })
         .catch(err => { console.warn("[tts] decode/play failed:", err); resolve(); });
     });
+  }
+
+  // Прерывание текущей чат-озвучки коротким fade-out, чтобы донат-аудио не
+  // наезжало на хвост и не было «обрезка» с щелчком. onended внутри playWavBlob
+  // сам зарезолвит промис, очередь loose двинется дальше.
+  function stopPlayback(handle) {
+    if (!handle || !handle.src) return;
+    try {
+      const ctx = handle.ctx, g = handle.gain;
+      const FADE = 0.05;
+      const t = ctx.currentTime;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(g.gain.value, t);
+      g.gain.linearRampToValueAtTime(0, t + FADE);
+      handle.src.stop(t + FADE + 0.01);
+    } catch (_) { /* уже остановлен */ }
+    handle.src = null;
   }
 
   function newEntry(payload) {
@@ -367,14 +388,26 @@
   // короля в чате — она не привязана к модалке, играет сама по себе).
   const ttsLooseQueue = [];
   let ttsLooseBusy = false;
+  // Хэндл текущего loose-плейбэка — нужен, чтобы прервать чат-озвучку, когда
+  // приходит донат (donation alert важнее, не должен играть поверх чата).
+  let ttsLooseHandle = null;
   async function ttsLoosePlayNext() {
     if (ttsLooseBusy) return;
     const job = ttsLooseQueue.shift();
     if (!job) return;
     ttsLooseBusy = true;
-    await playWavBlob(job.wav_b64);
+    ttsLooseHandle = {};
+    await playWavBlob(job.wav_b64, ttsLooseHandle);
+    ttsLooseHandle = null;
     ttsLooseBusy = false;
     ttsLoosePlayNext();
+  }
+  // Прийдёт донат → сразу гасим чат-озвучку и выкидываем накопленные чат-jobs,
+  // чтобы донат не «догонял» их после своего конца. Сам донат проиграется через
+  // processQueue → playWavBlob (модалка ждёт его аудио).
+  function interruptLooseForDonation() {
+    ttsLooseQueue.length = 0;
+    stopPlayback(ttsLooseHandle);
   }
 
   const es = new EventSource(DONATTY_URL);
@@ -383,6 +416,7 @@
       const m = JSON.parse(e.data);
       if (!m) return;
       if (m.type === 'donation') {
+        interruptLooseForDonation();
         addAlert(m);
       } else if (m.type === 'tts' && m.wav_b64) {
         if (m.donation_id && setAudio(m.donation_id, m.wav_b64)) {

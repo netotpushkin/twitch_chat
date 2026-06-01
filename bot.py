@@ -331,8 +331,12 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                             moderation.moderate(tags, llogin, text)
                             # +1 монета с кулдауном; функция сама фильтрует частые сообщения.
                             economy.award_chat(tags.get("user-id", ""), llogin, user)
-                            # Сообщения «короля доната» озвучиваются через TTS.
-                            if king.is_king(llogin):
+                            # TTS: режим "king" — озвучиваем только короля доната;
+                            # "all" — каждое сообщение в чате (переключается !озвучка).
+                            tts_mode = tts.get_chat_mode()
+                            if tts_mode == "all":
+                                tts.enqueue(text, source="chat-all")
+                            elif king.is_king(llogin):
                                 tts.enqueue(text, source="king-message")
                         if is_command:
                             cparts = stripped.split()
@@ -409,6 +413,14 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                                         tags.get("user-id", ""), args[0], amount
                                     )
                                     safe_send(f"@{user} {msg}")
+                            elif cmd == "!озвучка":
+                                if not is_mod:
+                                    continue
+                                new_mode = tts.toggle_chat_mode()
+                                if new_mode == "all":
+                                    safe_send(f"@{user} озвучка чата: ВСЕ сообщения")
+                                else:
+                                    safe_send(f"@{user} озвучка чата: только король доната")
                             elif cmd == "!заголовок":
                                 if not is_mod:
                                     continue

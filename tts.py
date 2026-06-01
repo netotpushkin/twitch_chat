@@ -20,31 +20,84 @@ import base64
 import io
 import re
 import threading
+import time
 import queue as _queue
 import uuid
 import wave
 
-from config import TTS_SPEAKER
+from config import TTS_SPEAKER, TTS_SPEAKER_CHAT
 from events import donatty_bus
 
 
 # ---------- Параметры синтеза ----------
 
 _SPEAKER       = TTS_SPEAKER   # из config / env TTS_SPEAKER, см. config.py
+_SPEAKER_CHAT  = TTS_SPEAKER_CHAT  # голос для режима «озвучка всех» (!озвучка)
 # 48 кГц — стандартная частота браузерного AudioContext. Если отдадим 24 кГц,
 # CEF в OBS будет апсемплить → металлический звон на согласных. На 48 кГц
 # ресэмплинга в браузере нет; Silero справляется с внутренним апсемплингом
 # лучше, чем дефолтный аудиостек Chromium.
 _SAMPLE_RATE   = 48000
 _MAX_CHARS     = 200       # длиннее обрезаем
+# Короткие чат-реплики ("+", "лол", "да", "ок") не озвучиваем — на 100мс
+# fade-in/out от них ничего не остаётся, и в звуковом потоке это просто щелчки.
+# Донаты этим порогом не задеваются: enqueue проверяет только _CHAT_SOURCES.
+_CHAT_MIN_CHARS = 5
 
 
 # ---------- Состояние модуля ----------
 
 _model = None
 _model_ready = threading.Event()
-# (audio_id, text, source, donation_id) — donation_id связывает аудио с донатом для оверлея
-_jobs: "_queue.Queue[tuple[str, str, str, str]]" = _queue.Queue(maxsize=64)
+
+# Режим озвучки чата: "king" — только сообщения короля доната (дефолт),
+# "all" — каждое сообщение в чате. Переключается командой !озвучка.
+_chat_mode = "king"
+_chat_mode_lock = threading.Lock()
+
+# Источники, для которых работает «один за раз»: новые чат-сообщения дропаются,
+# пока проигрывается предыдущее, и сразу после него озвучивается СЛЕДУЮЩЕЕ
+# пришедшее, а не всё накопленное. Донаты (source="donation") не дропаются — у
+# них есть donation_id, привязанный к оверлей-модалке, очередь обязана выполниться.
+_CHAT_SOURCES = frozenset({"chat-all", "king-message"})
+
+# monotonic-таймштамп, до которого считаем, что аудио ещё проигрывается.
+# Под одной блокировкой проверяется и обновляется и в enqueue (резервация при
+# постановке в очередь), и в воркере (точная длительность после синтеза) — это
+# закрывает гонку «два сообщения проскочили gate до того, как воркер выставит
+# busy». Браузерному пайплайну (SSE → decodeAudioData → playback) добавляем
+# небольшой буфер, чтобы не наложиться на хвост звука.
+_busy_until = 0.0
+_busy_lock = threading.Lock()
+_PLAYBACK_BUFFER_SEC = 0.4  # запас на доставку события и старт декодирования в OBS
+# Резервация в enqueue: на момент постановки точная длительность ещё неизвестна
+# (синтез не начат), даём заведомо больший потолок. Воркер перепишет на реальное
+# значение после _model.apply_tts. 60с покрывает синтез самой длинной фразы
+# (_MAX_CHARS=200) на CPU с большим запасом.
+_SYNTH_SAFETY_SEC = 60.0
+
+
+def _set_busy_until(ts):
+    global _busy_until
+    with _busy_lock:
+        _busy_until = ts
+
+
+def get_chat_mode():
+    with _chat_mode_lock:
+        return _chat_mode
+
+
+def toggle_chat_mode():
+    """Переключает режим king↔all, возвращает новое значение."""
+    global _chat_mode
+    with _chat_mode_lock:
+        _chat_mode = "all" if _chat_mode == "king" else "king"
+        return _chat_mode
+
+# (audio_id, text, source, donation_id, speaker) — donation_id связывает аудио с донатом
+# для оверлея; speaker позволяет режиму «озвучка всех» использовать отдельный голос.
+_jobs: "_queue.Queue[tuple[str, str, str, str, str]]" = _queue.Queue(maxsize=64)
 _log = print  # перенастраивается в start()
 
 
@@ -171,17 +224,23 @@ def _worker():
     if _model is None:
         return
     while True:
-        audio_id, text, source, donation_id = _jobs.get()
+        audio_id, text, source, donation_id, speaker = _jobs.get()
+        # busy выставляем ДЛЯ ЛЮБОГО джоба, не только чатового: пока играет донат,
+        # чат-озвучка тоже должна быть подавлена, иначе сообщения, пришедшие во
+        # время донат-фразы, накопятся в очереди и проиграются подряд после.
+        _set_busy_until(time.monotonic() + _SYNTH_SAFETY_SEC)
         try:
             # put_accent — автоматическая расстановка ударений по словарю Silero;
             # put_yo — замена «е» на «ё» где нужно. Оба заметно улучшают чистоту
             # произношения и убирают «зернистость» на сложных словах.
             audio = _model.apply_tts(
-                text=text, speaker=_SPEAKER, sample_rate=_SAMPLE_RATE,
+                text=text, speaker=speaker or _SPEAKER, sample_rate=_SAMPLE_RATE,
                 put_accent=True, put_yo=True,
             )
             wav = _tensor_to_wav(audio)
         except Exception as e:
+            # Снимаем «занят», иначе чат заглохнет на _SYNTH_SAFETY_SEC.
+            _set_busy_until(0.0)
             _log(f"(tts) синтез упал ({e!r}); пропуск: {text[:50]!r}")
             # Сообщаем оверлею что для этого доната озвучки не будет —
             # иначе модалка зависнет в ожидании.
@@ -191,6 +250,10 @@ def _worker():
                 })
             continue
         wav_b64 = base64.b64encode(wav).decode("ascii")
+        # Точная длительность аудио — прямо из тензора Silero (samples / SR),
+        # не зависит от формата WAV-заголовка.
+        duration = float(audio.shape[0]) / _SAMPLE_RATE
+        _set_busy_until(time.monotonic() + duration + _PLAYBACK_BUFFER_SEC)
         # Едем по donatty_bus вместе с обычными donation-событиями. WAV инлайнен
         # base64 — клиент не делает отдельный HTTP-запрос, обходим лимит коннектов.
         donatty_bus.publish({
@@ -206,16 +269,40 @@ def _worker():
 
 # ---------- Публичное API ----------
 
-def enqueue(text, source="generic", donation_id=""):
+def enqueue(text, source="generic", donation_id="", speaker=""):
     """Поставить текст в очередь синтеза. Если модель ещё грузится — задание подождёт.
-    donation_id — опциональная корреляция с событием donation (модалка ждёт это аудио)."""
+    donation_id — опциональная корреляция с событием donation (модалка ждёт это аудио).
+    speaker — переопределить голос Silero (по умолчанию _SPEAKER)."""
+    global _busy_until
     cleaned = _clean(text)
     if not cleaned:
         return None
+    is_chat = source in _CHAT_SOURCES
+    # Короткие чат-реплики пропускаем — на них fade-in/out съедает почти всё,
+    # остаётся щелчок. Донаты прозвучат целиком вне зависимости от длины.
+    if is_chat and len(cleaned) < _CHAT_MIN_CHARS:
+        return None
+    # Режим «озвучка всего чата» использует отдельный голос, чтобы на слух
+    # отличаться от короля и донат-сообщений.
+    if not speaker and source == "chat-all":
+        speaker = _SPEAKER_CHAT
     audio_id = uuid.uuid4().hex
-    try:
-        _jobs.put_nowait((audio_id, cleaned, source, donation_id))
-    except _queue.Full:
+    queued = False
+    # Атомарно: проверяем «занято?», ставим в очередь, резервируем busy. Без
+    # одной блокировки два чат-сообщения, пришедшие в один тик, оба видели бы
+    # _busy_until=0 и оба попали бы в очередь — второе сыграло бы сразу после
+    # первого, нарушив «один за раз». Реальную длительность позже впишет воркер.
+    with _busy_lock:
+        if is_chat and time.monotonic() < _busy_until:
+            return None
+        try:
+            _jobs.put_nowait((audio_id, cleaned, source, donation_id, speaker))
+            queued = True
+            if is_chat:
+                _busy_until = time.monotonic() + _SYNTH_SAFETY_SEC
+        except _queue.Full:
+            pass
+    if not queued:
         _log("(tts) очередь переполнена, сбрасываю задание")
         # Если задание дропнуто — модалка иначе будет ждать аудио бесконечно.
         if donation_id:

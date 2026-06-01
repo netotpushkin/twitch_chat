@@ -96,8 +96,10 @@ TITLER_INTERVAL=600
 TITLER_MIN_MESSAGES=10
 # TITLER_REQUIRED_TAGS=Русский,18plus   # опционально
 
-# TTS-голос Silero v4_ru
+# TTS-голос Silero v4_ru (aidar/baya/kseniya/xenia/eugene/random)
 TTS_SPEAKER=xenia
+# Голос для режима «озвучка всего чата» (!озвучка) — отдельный, чтобы отличался от короля
+TTS_SPEAKER_CHAT=eugene
 
 # Donatty — оба значения из URL виджета донатов
 # https://widgets.donatty.com/donations/?ref=<REF>&token=<TOKEN>
