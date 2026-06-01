@@ -20,7 +20,7 @@
   - `!заголовок` — форсировать авто-подбор заголовка и тегов (только моды/стример).
 - **Модерация** (`moderation.py`): детерминированные предфильтры + LLM-классификатор через OpenRouter. Есть `MODERATION_DRY_RUN=1` для обкатки.
 - **Автотитлер** (`titler.py`): периодически смотрит на чат и через LLM предлагает новый заголовок и теги, выставляет через Helix.
-- **Экономика** (`economy.py`): +монеты за сообщения (с кулдауном) и за watchtime (тикер по `/chat/chatters`). Хранится в `state/`.
+- **Экономика** (`economy.py`): +монеты за сообщения (с кулдауном) и за watchtime (тикер по `/chat/chatters`). Хранится в SQLite `state/coins.db`.
 - **YouTube-очередь** (`youtube.py`): проверка ролика через oEmbed/scrape, голосование за скип с окном `YT_VOTE_WINDOW`, фоновое выполнение в пуле.
 - **TTS** (`tts.py`): Silero v4_ru (`aidar / baya / kseniya / xenia / eugene / random`), очередь, воспроизведение в `donatty.html`.
 - **Donatty** (`donatty.py`): подключение к виджету по SSE; донаты идут в TTS и в оверлей.
@@ -53,7 +53,7 @@
 | `prompt.py` | Интерактивный ввод в терминале (для отправки в чат). |
 | `log.py`, `http_pool.py` | Утилиты. |
 | `overlays/*.html` | OBS Browser-source оверлеи (chat, alerts, dice, donatty, emote_rain, tts, webcam, youtube). |
-| `state/` | Рантайм-стейт (token.json, monets.json, overlay_token.txt, ...). Не в git. |
+| `state/` | Рантайм-стейт (token.json, coins.db, overlay_token.txt, ...). Не в git. |
 
 ---
 
@@ -162,8 +162,8 @@ channel:manage:broadcast
 
 - `token.json` — Twitch OAuth-токен и `user_id`;
 - `overlay_token.txt` — токен для `/test/*`, переживает рестарт;
-- `monets.json` — экономика;
-- кэши бейджей, watchtime и т. п.
+- `coins.db` — SQLite-база экономики (балансы, watchtime);
+- кэши бейджей и т. п.
 
 Удалить `state/` = сбросить всё (включая логин).
 
