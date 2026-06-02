@@ -366,11 +366,7 @@ def yt_start_clip(item, announce=True):
         "requester": item.get("requester", ""),
     })
     if announce:
-        _broadcast(
-            f"Поехали! «{item['title']}». "
-            f"Если хочешь скипнуть — пиши !-, это запустит "
-            f"{YT_VOTE_WINDOW}-секундное голосование (!- скип, !+ оставить)"
-        )
+        _broadcast(f"▶ «{item['title']}» — !- скип, !+ оставить")
 
 
 def yt_advance():
