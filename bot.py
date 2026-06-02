@@ -170,7 +170,6 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
     limiter = RateLimiter()
     prompt = Prompt()
     log.attach(prompt)
-    self_state = {"display_name": nick, "color": "", "badges": ""}
     SEEN_LOGINS_MAX = 10_000
     seen_logins: "collections.OrderedDict[str, bool]" = collections.OrderedDict()
     # safe_send зовут из IRC-цикла, executor'а YouTube, таймера голосования и Prompt;
@@ -201,27 +200,24 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
         _, err = _raw_send(f"PRIVMSG {CHANNEL} :{msg}\r\n".encode("utf-8"))
         if err:
             prompt.print(f"(не отправилось: {err})")
+
+    def announce(text, color="primary"):
+        """Helix-объявление в чат (выделенный блок). На любой сбой/отсутствие id — обычный PRIVMSG."""
+        if not broadcaster_id or not user_id:
+            safe_send(text)
             return
-        # Локальное эхо — Twitch не возвращает наши PRIVMSG обратно.
-        color = self_state["color"]
-        chat_bus.publish({
-            "type": "msg",
-            "id": "",
-            "login": nick.lower(),
-            "user": self_state["display_name"],
-            "color": color if _HEX_COLOR_RE.fullmatch(color or "") else _default_color(nick.lower()),
-            "badges": resolve_badges({"badges": self_state["badges"]}),
-            "html": escape_html(msg),
-            "first": False,
-            "role": role_from_badges({"badges": self_state["badges"]}),
-            "king": king.is_king(nick.lower()),
-        })
+        try:
+            twitch_api.helix_send_announcement(token, broadcaster_id, user_id, text, color=color)
+        except Exception as e:
+            prompt.print(f"(announce упал: {type(e).__name__}: {e}) — пишу обычным сообщением")
+            safe_send(text)
 
     youtube.set_chat_announce(safe_send)
+    youtube.set_chat_broadcast(lambda text: announce(text, color="orange"))
     # Стример сам себе модератор; для отдельного бота сюда нужно передать его user_id.
     # send=safe_send — чтобы при удалении бот мог написать в чат "@user, причина".
     moderation.setup(token, broadcaster_id, user_id, prompt, send=safe_send)
-    king.start(announce=safe_send, log=prompt.print)
+    king.start(announce=lambda text: announce(text, color="purple"), log=prompt.print)
     prompt.start(safe_send)
 
     backoff = 1
@@ -412,7 +408,8 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                                     ok, msg = economy.transfer(
                                         tags.get("user-id", ""), args[0], amount
                                     )
-                                    safe_send(f"@{user} {msg}")
+                                    if msg:
+                                        safe_send(f"@{user} {msg}")
                             elif cmd == "!озвучка":
                                 if not is_mod:
                                     continue
@@ -434,12 +431,6 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                     if um and um.group("tags"):
                         us_tags = _parse_tags(um.group("tags"))
                         b = us_tags.get("badges", "")
-                        self_state["badges"] = b
-                        self_state["badge_info"] = us_tags.get("badge-info", "")
-                        if us_tags.get("display-name"):
-                            self_state["display_name"] = us_tags["display-name"]
-                        if us_tags.get("color"):
-                            self_state["color"] = us_tags["color"]
                         privileged = any(r in b for r in (
                             "broadcaster/", "moderator/", "lead_moderator/", "vip/"
                         ))

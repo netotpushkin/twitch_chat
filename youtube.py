@@ -305,7 +305,10 @@ yt_queue = collections.deque()
 yt_queue_lock = threading.Lock()
 
 # Глобальный «динамик» в чат — присваивается run_chat через set_chat_announce.
+# _chat_announce — обычный PRIVMSG (ответы пользователю), _chat_broadcast — Helix-объявление
+# для канало-уровневых событий вроде старта клипа. Если broadcast не задан — fallback на say.
 _chat_announce = None
+_chat_broadcast = None
 
 
 def set_chat_announce(fn):
@@ -313,9 +316,21 @@ def set_chat_announce(fn):
     _chat_announce = fn
 
 
+def set_chat_broadcast(fn):
+    global _chat_broadcast
+    _chat_broadcast = fn
+
+
 def _say(text):
     if _chat_announce:
         try: _chat_announce(text)
+        except Exception: pass
+
+
+def _broadcast(text):
+    fn = _chat_broadcast or _chat_announce
+    if fn:
+        try: fn(text)
         except Exception: pass
 
 
@@ -351,7 +366,7 @@ def yt_start_clip(item, announce=True):
         "requester": item.get("requester", ""),
     })
     if announce:
-        _say(
+        _broadcast(
             f"Поехали! «{item['title']}». "
             f"Если хочешь скипнуть — пиши !-, это запустит "
             f"{YT_VOTE_WINDOW}-секундное голосование (!- скип, !+ оставить)"

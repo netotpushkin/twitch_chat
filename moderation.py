@@ -290,7 +290,7 @@ def _process(tags, login, text):
     bad = _find_bad_url(text)
     if bad:
         _delete(tags, msg_id, login, text, f"link:{bad}",
-                announce_text=f"ссылки разрешены только на YouTube ({bad} — нельзя)")
+                announce_text="ссылки разрешены только на YouTube")
         return
 
     # 5. Слишком короткое — не имеет смысла гонять в LLM.

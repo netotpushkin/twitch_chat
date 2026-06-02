@@ -25,7 +25,7 @@ os.makedirs(STATE_DIR, exist_ok=True)
 CLIENT_ID  = os.environ.get("TWITCH_CLIENT_ID", "PUT_YOUR_CLIENT_ID_HERE")
 CHANNEL    = "#" + os.environ.get("TWITCH_CHANNEL", "put_channel_here").lstrip("#")
 REDIRECT   = "http://localhost:3000"
-SCOPES     = "chat:read chat:edit moderator:read:followers moderator:read:chatters moderator:manage:chat_messages channel:read:subscriptions channel:manage:broadcast"
+SCOPES     = "chat:read chat:edit moderator:read:followers moderator:read:chatters moderator:manage:chat_messages moderator:manage:announcements channel:read:subscriptions channel:manage:broadcast"
 TOKEN_FILE = os.path.join(STATE_DIR, "token.json")
 
 OVERLAY_PORT  = int(os.environ.get("OVERLAY_PORT", "5005"))

@@ -159,6 +159,28 @@ def helix_patch_channel(token, broadcaster_id, title=None, tags=None):
     )
 
 
+def helix_send_announcement(token, broadcaster_id, moderator_id, message, color="primary"):
+    """POST /helix/chat/announcements — публикует объявление в чате (выделенный блок).
+
+    Требует scope moderator:manage:announcements и чтобы moderator_id был модером канала.
+    color: primary|blue|green|orange|purple. Длина message — до 500 символов.
+    Rate-limit ≈1 анонс / 2 сек на канал, иначе 429 (поднимется HTTPError)."""
+    url = (
+        "https://api.twitch.tv/helix/chat/announcements"
+        f"?broadcaster_id={broadcaster_id}&moderator_id={moderator_id}"
+    )
+    http_pool.request(
+        "POST", url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Client-Id": CLIENT_ID,
+            "Content-Type": "application/json",
+        },
+        body=json.dumps({"message": message, "color": color}).encode("utf-8"),
+        timeout=10,
+    )
+
+
 def helix_delete_message(token, broadcaster_id, moderator_id, message_id):
     """DELETE /helix/moderation/chat — удалить одно сообщение по его id из IRC-тега.
 

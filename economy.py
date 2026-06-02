@@ -299,7 +299,7 @@ def transfer(from_uid, to_login, amount):
         if not src or src_bal < amount:
             return False, f"недостаточно монет (у тебя {src_bal})"
         if src[0] == to_login:
-            return False, "нельзя переводить самому себе"
+            return False, None
         dst = _conn.execute(
             "SELECT uid, display, login FROM users WHERE login=? LIMIT 1", (to_login,)
         ).fetchone()
