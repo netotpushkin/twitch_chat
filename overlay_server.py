@@ -19,7 +19,7 @@ from youtube import (
 )
 
 
-STATIC_HTML = {"alerts", "chat", "dice", "donatty", "emote_rain", "goal", "tts", "webcam", "youtube"}
+STATIC_HTML = {"alerts", "chat", "dice", "donatty", "emote_rain", "goal", "webcam", "youtube"}
 
 # Содержимое HTML кэшируется при старте — на каждый GET оверлея больше не лезем на диск.
 _OVERLAY_CACHE: dict[str, bytes] = {}
