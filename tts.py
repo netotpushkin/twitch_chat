@@ -233,8 +233,16 @@ def _worker():
             # put_accent — автоматическая расстановка ударений по словарю Silero;
             # put_yo — замена «е» на «ё» где нужно. Оба заметно улучшают чистоту
             # произношения и убирают «зернистость» на сложных словах.
+            # SSML-обёртка с prosody rate="90%": Silero тянет темп через DSP без
+            # сдвига питча (в отличие от browser-side playbackRate). Экранируем
+            # &<> — после _clean остаются только буквы/цифры/пунктуация, но на
+            # всякий случай.
+            ssml_text = (
+                text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
             audio = _model.apply_tts(
-                text=text, speaker=speaker or _SPEAKER, sample_rate=_SAMPLE_RATE,
+                ssml_text=f'<speak><prosody rate="90%">{ssml_text}</prosody></speak>',
+                speaker=speaker or _SPEAKER, sample_rate=_SAMPLE_RATE,
                 put_accent=True, put_yo=True,
             )
             wav = _tensor_to_wav(audio)

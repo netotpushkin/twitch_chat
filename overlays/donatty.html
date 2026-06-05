@@ -196,7 +196,8 @@
   }
 
   // --- Звук доната в стиле Windows Vista: металлический «звон монеты» с тремоло ---
-  const SOUND_VOLUME = 0.5; // единый уровень громкости для всех уведомлений
+  const SOUND_VOLUME = 0.3; // единый уровень громкости для всех уведомлений
+  const TTS_VOLUME = 0.8;   // уровень громкости TTS-озвучки (0..1)
   let audioCtx = null;
   function ac() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -268,16 +269,16 @@
         .then(decoded => {
           const src = ctx.createBufferSource();
           src.buffer = decoded;
-          // Заметные фейды на вход/выход (100мс): мягкое нарастание/затухание
-          // приятнее, чем резкий старт, и одновременно убирает щелчок (Silero
-          // не делает rampin/rampout, первый сэмпл может быть != 0).
+          // Короткие фейды на вход/выход (40мс): достаточно, чтобы убрать
+          // щелчок (Silero не делает rampin/rampout, первый сэмпл может быть
+          // != 0), при этом старт и хвост звучат практически без обрезки.
           const g = ctx.createGain();
-          const FADE = 0.10;
+          const FADE = 0.04;
           const t0 = ctx.currentTime;
           const t1 = t0 + decoded.duration;
           g.gain.setValueAtTime(0, t0);
-          g.gain.linearRampToValueAtTime(1, t0 + FADE);
-          g.gain.setValueAtTime(1, Math.max(t0 + FADE, t1 - FADE));
+          g.gain.linearRampToValueAtTime(TTS_VOLUME, t0 + FADE);
+          g.gain.setValueAtTime(TTS_VOLUME, Math.max(t0 + FADE, t1 - FADE));
           g.gain.linearRampToValueAtTime(0, t1);
           src.connect(g).connect(ctx.destination);
           src.onended = () => resolve();

@@ -207,7 +207,7 @@
 
   // --- Звуки в стиле Windows Vista через Web Audio API ---
   // У каждого уведомления свой тембр и характер, общая мастер-громкость одна.
-  const SOUND_VOLUME = 0.5; // единый уровень громкости для всех уведомлений
+  const SOUND_VOLUME = 0.3; // единый уровень громкости для всех уведомлений
   let audioCtx = null;
   function ac() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();

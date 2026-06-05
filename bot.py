@@ -24,6 +24,7 @@ import dice
 import donatty
 import economy
 from events import chat_bus, dice_bus, emote_bus
+import goal
 import king
 import log
 import moderation
@@ -218,6 +219,7 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
     # send=safe_send — чтобы при удалении бот мог написать в чат "@user, причина".
     moderation.setup(token, broadcaster_id, user_id, prompt, send=safe_send)
     king.start(announce=lambda text: announce(text, color="purple"), log=prompt.print)
+    goal.start(announce=lambda text: announce(text, color="green"), log=prompt.print)
     prompt.start(safe_send)
 
     backoff = 1
@@ -498,9 +500,8 @@ if __name__ == "__main__":
     print(f"Тест дождя:     {base}/test/emote_rain?char=%F0%9F%94%A5&count=30{tok}")
     print(f"Donatty-оверлей: {base}/donatty.html  (источник: /donatty)")
     print(f"Тест доната:    {base}/test/donation?user=TestUser&amount=500&message=привет{tok}")
-    print(f"TTS-отладка:     {base}/tts.html      (для проверки из браузера; "
-          f"в OBS озвучку играет donatty.html)")
-
+    print(f"Сбор-оверлей:    {base}/goal.html     (источник: /goal)")
+    print(f"Сброс сбора:    {base}/test/goal_reset?_=1{tok}")
     print(f"Кубик-оверлей:   {base}/dice.html     (источник: /dice)")
     print(f"YouTube-оверлей: {base}/youtube.html  (источник: /media)")
     print(f"Тест play:      {base}/test/yt/play?v=dQw4w9WgXcQ{tok}")

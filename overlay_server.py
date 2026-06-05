@@ -11,14 +11,15 @@ import threading
 import urllib.parse
 
 from config import CHANNEL, OVERLAY_PORT, OVERLAY_TOKEN
-from events import chat_bus, dice_bus, donatty_bus, emote_bus, events_bus, media_bus
+from events import chat_bus, dice_bus, donatty_bus, emote_bus, events_bus, goal_bus, media_bus
+import goal
 import youtube
 from youtube import (
     parse_youtube_id, yt_advance, yt_queue, yt_queue_lock, yt_vote,
 )
 
 
-STATIC_HTML = {"alerts", "chat", "dice", "donatty", "emote_rain", "tts", "webcam", "youtube"}
+STATIC_HTML = {"alerts", "chat", "dice", "donatty", "emote_rain", "goal", "tts", "webcam", "youtube"}
 
 # Содержимое HTML кэшируется при старте — на каждый GET оверлея больше не лезем на диск.
 _OVERLAY_CACHE: dict[str, bytes] = {}
@@ -115,6 +116,11 @@ def _t_donation(q):
     return 200, f"sent donation {amount} {currency} from {user}\n"
 
 
+def _t_goal_reset(q):
+    goal.reset_for_test()
+    return 200, "goal reset\n"
+
+
 def _t_emote_rain(q):
     char = _qarg(q, "char", "🔥")
     count = max(1, min(_qint(q, "count", 10), 200))
@@ -147,6 +153,7 @@ TEST_ROUTES = {
     "/test/raid":         _t_raid,
     "/test/subgift":      _t_subgift,
     "/test/donation":     _t_donation,
+    "/test/goal_reset":   _t_goal_reset,
     "/test/emote_rain":   _t_emote_rain,
     "/test/yt/play":      _t_yt_play,
     "/test/yt/stop":      _t_yt_stop,
@@ -181,12 +188,14 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             try: self.wfile.write(body)
             except OSError: pass
 
-    def _serve_stream(self, bus, send_config=False):
+    def _serve_stream(self, bus, send_config=False, initial_event=None):
         # БЕЗ Access-Control-Allow-Origin: оверлеи открываются с того же origin
         # (localhost:OVERLAY_PORT), OBS Browser Source CORS не проверяет.
         # ACAO:* позволял бы любому открытому сайту читать чат/донаты в реальном времени.
         self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
+        # charset=utf-8 нужен явно: CEF в OBS Browser Source без него иногда
+        # пытается декодировать SSE как Latin-1 и портит кириллицу.
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
@@ -194,6 +203,13 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             cfg = json.dumps({"channel": CHANNEL.lstrip("#")}, ensure_ascii=False)
             try:
                 self.wfile.write(f"event: config\ndata: {cfg}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            except OSError:
+                return
+        if initial_event is not None:
+            payload = json.dumps(initial_event, ensure_ascii=False)
+            try:
+                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                 self.wfile.flush()
             except OSError:
                 return
@@ -224,6 +240,8 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             self._serve_stream(donatty_bus, send_config=False); return
         if self.path == "/emote_rain":
             self._serve_stream(emote_bus, send_config=False); return
+        if self.path == "/goal":
+            self._serve_stream(goal_bus, send_config=False, initial_event=goal.snapshot()); return
 
         path_only = urllib.parse.urlparse(self.path).path
         name = path_only.lstrip("/")
