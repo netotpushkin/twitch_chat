@@ -421,21 +421,21 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                                     safe_send(f"@{user} озвучка чата: ВСЕ сообщения")
                                 else:
                                     safe_send(f"@{user} озвучка чата: только король доната")
-                            elif cmd in ("!громче", "!тише"):
+                            elif cmd == "!громкость":
                                 if not is_mod:
                                     continue
-                                step = 10
-                                cur = yt_volume()
-                                if args:
-                                    try:
-                                        n = int(args[0])
-                                    except ValueError:
-                                        safe_send(f"@{user} нужно число 0..100")
-                                        continue
-                                    new_vol = n
-                                else:
-                                    new_vol = cur + step if cmd == "!громче" else cur - step
-                                applied = yt_set_volume(new_vol)
+                                if not args:
+                                    safe_send(
+                                        f"@{user} текущая громкость YouTube: "
+                                        f"{yt_volume()}/100 — задай число: !громкость 50"
+                                    )
+                                    continue
+                                try:
+                                    n = int(args[0])
+                                except ValueError:
+                                    safe_send(f"@{user} нужно число 0..100")
+                                    continue
+                                applied = yt_set_volume(n)
                                 safe_send(f"@{user} громкость YouTube: {applied}/100")
                             elif cmd == "!заголовок":
                                 if not is_mod:

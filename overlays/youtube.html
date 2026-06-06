@@ -183,7 +183,7 @@
     ? "http://localhost:5005/media"
     : "/media";
 
-  let VOLUME = 30;  // фактическая громкость в шкале плеера, меняется командами !громче / !тише
+  let VOLUME = 30;  // громкость плеера 0..100, меняется командой !громкость
 
   let player = null;
   let pendingCmd = null;
