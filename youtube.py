@@ -295,7 +295,7 @@ yt_vote = YoutubeVote()
 
 # ---------- Громкость YouTube-оверлея ----------
 
-YT_VOLUME_DEFAULT = 30
+YT_VOLUME_DEFAULT = 50
 
 _yt_volume = YT_VOLUME_DEFAULT
 _yt_volume_lock = threading.Lock()
