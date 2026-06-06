@@ -350,7 +350,7 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                                     safe_send(
                                         f"@{user} кинь после команды ссылку на YouTube-клип, "
                                         f"например: !ютуб https://youtu.be/dQw4w9WgXcQ — "
-                                        f"принимаются ролики 1–6 минут с 10000+ просмотров, "
+                                        f"принимаются ролики 1–8 минут с 10000+ просмотров, "
                                         f"без Shorts и трансляций."
                                     )
                                 else:

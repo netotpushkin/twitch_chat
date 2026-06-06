@@ -17,7 +17,7 @@ _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 YT_VOTE_WINDOW = 30      # секунд: окно голосования с момента первого !-
 YT_MIN_VIEWS   = 10_000  # минимум просмотров
 YT_MIN_SEC     = 60      # минимум 1 минута
-YT_MAX_SEC     = 360     # максимум 6 минут
+YT_MAX_SEC     = 480     # максимум 8 минут
 
 
 def _fmt_duration(sec):
