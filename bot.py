@@ -38,7 +38,8 @@ from twitch_api import (
 )
 import youtube
 from youtube import (
-    YT_VOTE_WINDOW, yt_advance, yt_close_voting, yt_publish_vote, yt_vote,
+    YT_VOTE_WINDOW, yt_advance, yt_close_voting, yt_publish_vote, yt_set_volume,
+    yt_volume, yt_vote,
 )
 from eventsub import run_eventsub
 from overlay_server import start_overlay_server
@@ -420,6 +421,22 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                                     safe_send(f"@{user} озвучка чата: ВСЕ сообщения")
                                 else:
                                     safe_send(f"@{user} озвучка чата: только король доната")
+                            elif cmd in ("!громче", "!тише"):
+                                if not is_mod:
+                                    continue
+                                step = 10
+                                cur = yt_volume()
+                                if args:
+                                    try:
+                                        n = int(args[0])
+                                    except ValueError:
+                                        safe_send(f"@{user} нужно число 0..100")
+                                        continue
+                                    new_vol = n
+                                else:
+                                    new_vol = cur + step if cmd == "!громче" else cur - step
+                                applied = yt_set_volume(new_vol)
+                                safe_send(f"@{user} громкость YouTube: {applied}/100")
                             elif cmd == "!заголовок":
                                 if not is_mod:
                                     continue

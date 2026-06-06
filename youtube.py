@@ -292,6 +292,29 @@ class YoutubeVote:
 
 yt_vote = YoutubeVote()
 
+
+# ---------- Громкость YouTube-оверлея ----------
+
+YT_VOLUME_DEFAULT = 30
+
+_yt_volume = YT_VOLUME_DEFAULT
+_yt_volume_lock = threading.Lock()
+
+
+def yt_volume():
+    with _yt_volume_lock:
+        return _yt_volume
+
+
+def yt_set_volume(value):
+    """Устанавливает громкость 0..100 и шлёт событие в оверлей."""
+    global _yt_volume
+    value = max(0, min(100, int(value)))
+    with _yt_volume_lock:
+        _yt_volume = value
+    media_bus.publish({"evt": "volume", "value": value})
+    return value
+
 # Пул для обработки команд с сетевыми запросами (!ютуб).
 _cmd_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="cmd"

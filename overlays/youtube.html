@@ -183,7 +183,7 @@
     ? "http://localhost:5005/media"
     : "/media";
 
-  const VOLUME = 30;
+  let VOLUME = 30;  // фактическая громкость в шкале плеера, меняется командами !громче / !тише
 
   let player = null;
   let pendingCmd = null;
@@ -261,6 +261,13 @@
     if (cmd.evt === "vote") {
       if (cmd.open) voteShow(cmd.skip, cmd.keep, cmd.seconds_left);
       else voteHide();
+      return;
+    }
+    if (cmd.evt === "volume") {
+      VOLUME = Math.max(0, Math.min(100, cmd.value | 0));
+      if (apiReady && player) {
+        try { player.setVolume(VOLUME); } catch (_) {}
+      }
       return;
     }
     if (!apiReady || !player) { pendingCmd = cmd; return; }
