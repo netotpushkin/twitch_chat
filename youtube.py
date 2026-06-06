@@ -387,6 +387,7 @@ def yt_start_clip(item, announce=True):
         "start": 0,
         "title": item.get("title", ""),
         "requester": item.get("requester", ""),
+        "volume": yt_volume(),  # чтобы переподключившийся оверлей знал текущую громкость
     })
     if announce:
         _broadcast(f"▶ «{item['title']}» — !- скип, !+ оставить")

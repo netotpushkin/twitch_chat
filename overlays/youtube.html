@@ -273,6 +273,7 @@
     if (!apiReady || !player) { pendingCmd = cmd; return; }
     if (cmd.evt === "play") {
       voteHide();
+      if (cmd.volume != null) VOLUME = Math.max(0, Math.min(100, cmd.volume | 0));
       try { player.mute(); } catch (_) {}
       const opts = { videoId: cmd.id };
       if (cmd.start != null) opts.startSeconds = cmd.start;
