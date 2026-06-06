@@ -24,12 +24,11 @@ from config import STATE_DIR
 # ---------- Конфиг ставок ----------
 
 RATES = {
-    # watchtime: каждые WATCHTIME_TICK_SEC раздаём WATCHTIME_BASE всем в /chatters,
-    # а если юзер писал в чат за последние WATCHTIME_ACTIVE_SEC — ещё WATCHTIME_ACTIVE.
-    "watchtime_tick_sec":   300,
-    "watchtime_base":       10,
-    "watchtime_active":     10,
-    "watchtime_active_sec": 300,
+    # watchtime: каждые WATCHTIME_TICK_SEC раздаём WATCHTIME_REWARD монет только тем
+    # из /chatters, кто писал в чат за последние WATCHTIME_ACTIVE_SEC.
+    "watchtime_tick_sec":   540,
+    "watchtime_reward":     10,
+    "watchtime_active_sec": 1800,
 
     # +1 за каждое не-командное сообщение, не чаще раза в чат_cooldown_sec.
     "chat_message":         1,
@@ -230,19 +229,18 @@ _WATCHTIME_BATCH = 500
 
 def award_watchtime(uids_to_info):
     """uids_to_info: {user_id: (login, display)} — из /chat/chatters.
-    Каждому +watchtime_base, активным (писал недавно) ещё +watchtime_active.
+    Награждаем по watchtime_reward только тех, кто писал в чат за последние
+    watchtime_active_sec.
 
     Бьём на батчи по _WATCHTIME_BATCH чтобы не держать write-lock дольше ~50мс:
     иначе на крупном канале balance/award_chat от IRC-loop будут ждать всю
     обработку. Между батчами _lock освобождается, читатели проскакивают."""
-    base = RATES["watchtime_base"]
-    active_bonus = RATES["watchtime_active"]
+    amount = RATES["watchtime_reward"]
     active_window = RATES["watchtime_active_sec"]
-    if base <= 0 and active_bonus <= 0:
-        return 0, 0
+    if amount <= 0:
+        return 0
     now = time.time()
     given = 0
-    active = 0
     items = [(uid, info) for uid, info in uids_to_info.items() if uid]
     for i in range(0, len(items), _WATCHTIME_BATCH):
         with _tx():
@@ -252,16 +250,13 @@ def award_watchtime(uids_to_info):
                     "SELECT last_msg_ts FROM users WHERE uid=?", (uid,)
                 ).fetchone()
                 last = row[0] if row else 0.0
-                amount = base
-                if now - last < active_window:
-                    amount += active_bonus
-                    active += 1
-                if amount > 0:
-                    _conn.execute(
-                        "UPDATE users SET balance=balance+?, earned=earned+?, last_seen_ts=? WHERE uid=?",
-                        (amount, amount, now, uid))
-                    given += 1
-    return given, active
+                if now - last >= active_window:
+                    continue
+                _conn.execute(
+                    "UPDATE users SET balance=balance+?, earned=earned+?, last_seen_ts=? WHERE uid=?",
+                    (amount, amount, now, uid))
+                given += 1
+    return given
 
 
 def balance(user_id):
@@ -331,8 +326,8 @@ def run_watchtime_ticker(token, broadcaster_id, moderator_id):
             log.log(f"(economy) /chatters недоступен: {e}")
             chatters = None
         if chatters:
-            given, active = award_watchtime(chatters)
-            log.log(f"(economy) watchtime: {given} зрителей получили монеты ({active} активных)")
+            given = award_watchtime(chatters)
+            log.log(f"(economy) watchtime: {given} активных зрителей получили монеты")
         tick = RATES["watchtime_tick_sec"]
         time.sleep(max(30, tick))
 
