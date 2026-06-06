@@ -225,8 +225,9 @@ def _llm_verdict(text):
 
 # ---------- Действие ----------
 
-def _announce(display_name, reason):
-    """Отправить в чат человекочитаемое объяснение удаления.
+def _explain_removal(display_name, reason):
+    """Отправить в чат человекочитаемое объяснение удаления обычным PRIVMSG
+    (не Helix-announcement — это просто ответ пользователю).
     display_name — то, что пользователь видит в чате (с регистром).
     reason — короткая фраза без префикса, например 'оскорбление' или 'ссылка не на YouTube'."""
     send = _state.get("send")
@@ -235,18 +236,18 @@ def _announce(display_name, reason):
     try:
         send(f"@{display_name}, {reason}")
     except Exception as e:
-        _log(f"(moderation) не удалось анонсировать удаление: {e}")
+        _log(f"(moderation) не удалось написать объяснение в чат: {e}")
 
 
-def _delete(tags, msg_id, login, text, reason, announce_text=None):
+def _delete(tags, msg_id, login, text, reason, reply_text=None):
     """reason — короткая внутренняя метка для логов (art / link:host / llm:<что-то>).
-    announce_text — если задан, отправляется в чат как `@user, <announce_text>`."""
+    reply_text — если задан, отправляется в чат как `@user, <reply_text>`."""
     snippet = text if len(text) <= 80 else text[:77] + "..."
     display_name = tags.get("display-name") or login
     if MODERATION_DRY_RUN:
         _log(f"(moderation DRY) удалил бы {login} [{reason}]: {snippet}")
-        if announce_text:
-            _log(f"(moderation DRY) написал бы в чат: @{display_name}, {announce_text}")
+        if reply_text:
+            _log(f"(moderation DRY) написал бы в чат: @{display_name}, {reply_text}")
         return
     token = _state.get("token")
     bid = _state.get("broadcaster_id")
@@ -260,8 +261,8 @@ def _delete(tags, msg_id, login, text, reason, announce_text=None):
     except Exception as e:
         _log(f"(moderation) DELETE failed для {login}: {e}")
         return
-    if announce_text:
-        _announce(display_name, announce_text)
+    if reply_text:
+        _explain_removal(display_name, reply_text)
 
 
 def _process(tags, login, text):
@@ -283,14 +284,14 @@ def _process(tags, login, text):
     # 3. ASCII-арт / символьный спам.
     if _is_art(text):
         _delete(tags, msg_id, login, text, "art",
-                announce_text="без ASCII-арта и набивки символами, пожалуйста")
+                reply_text="без ASCII-арта и набивки символами, пожалуйста")
         return
 
     # 4. URL-фильтр: только YouTube разрешён.
     bad = _find_bad_url(text)
     if bad:
         _delete(tags, msg_id, login, text, f"link:{bad}",
-                announce_text="ссылки разрешены только на YouTube")
+                reply_text="ссылки разрешены только на YouTube")
         return
 
     # 5. Слишком короткое — не имеет смысла гонять в LLM.
@@ -301,7 +302,7 @@ def _process(tags, login, text):
     reason = _llm_verdict(text)
     if reason:
         # reason — то, что LLM написал после "DELETE:". Это и есть человекочитаемая причина.
-        _delete(tags, msg_id, login, text, f"llm:{reason}", announce_text=reason)
+        _delete(tags, msg_id, login, text, f"llm:{reason}", reply_text=reason)
 
 
 def _safe_process(tags, login, text):
