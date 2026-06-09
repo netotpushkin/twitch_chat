@@ -325,18 +325,23 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                             emotes_list = extract_emotes(text, tags.get("emotes", ""))
                             if emotes_list:
                                 emote_bus.publish({"emotes": emotes_list})
-                            # Модерация — асинхронно, не блокирует IRC-loop. Если LLM решит
-                            # «удалять», оверлей увидит CLEARMSG как обычное действие модератора.
-                            moderation.moderate(tags, llogin, text)
-                            # +1 монета с кулдауном; функция сама фильтрует частые сообщения.
-                            economy.award_chat(tags.get("user-id", ""), llogin, user)
                             # TTS: режим "king" — озвучиваем только короля доната;
                             # "all" — каждое сообщение в чате (переключается !озвучка).
-                            tts_mode = tts.get_chat_mode()
-                            if tts_mode == "all":
-                                tts.enqueue(text, source="chat-all")
-                            elif king.is_king(llogin):
-                                tts.enqueue(text, source="king-message")
+                            # Озвучиваем только после прохождения модерации — поэтому
+                            # завёрнуто в колбэк on_pass (зовётся из воркера модерации,
+                            # если сообщение не удалено). text/llogin биндим дефолтными
+                            # аргументами: колбэк сработает позже, когда переменные цикла
+                            # уже укажут на другое сообщение.
+                            def _voice_if_passed(text=text, llogin=llogin):
+                                if tts.get_chat_mode() == "all":
+                                    tts.enqueue(text, source="chat-all")
+                                elif king.is_king(llogin):
+                                    tts.enqueue(text, source="king-message")
+                            # Модерация — асинхронно, не блокирует IRC-loop. Если LLM решит
+                            # «удалять», оверлей увидит CLEARMSG как обычное действие модератора.
+                            moderation.moderate(tags, llogin, text, on_pass=_voice_if_passed)
+                            # +1 монета с кулдауном; функция сама фильтрует частые сообщения.
+                            economy.award_chat(tags.get("user-id", ""), llogin, user)
                         if is_command:
                             cparts = stripped.split()
                             cmd = cparts[0].lower()
