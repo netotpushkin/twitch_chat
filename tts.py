@@ -18,6 +18,7 @@
 
 import base64
 import io
+import random
 import re
 import threading
 import time
@@ -25,14 +26,17 @@ import queue as _queue
 import uuid
 import wave
 
-from config import TTS_SPEAKER, TTS_SPEAKER_CHAT
+from config import TTS_SPEAKER
 from events import donatty_bus
 
 
 # ---------- Параметры синтеза ----------
 
 _SPEAKER       = TTS_SPEAKER   # из config / env TTS_SPEAKER, см. config.py
-_SPEAKER_CHAT  = TTS_SPEAKER_CHAT  # голос для режима «озвучка всех» (!озвучка)
+# Голоса Silero v4_ru, среди которых случайно выбирается голос в режиме «озвучка
+# всех» (!озвучка) — каждое сообщение озвучивается новым голосом для разнообразия.
+# Голос короля (_SPEAKER) исключаем при выборе, чтобы король оставался узнаваемым.
+_CHAT_VOICES   = ("aidar", "baya", "kseniya", "xenia", "eugene")
 # 48 кГц — стандартная частота браузерного AudioContext. Если отдадим 24 кГц,
 # CEF в OBS будет апсемплить → металлический звон на согласных. На 48 кГц
 # ресэмплинга в браузере нет; Silero справляется с внутренним апсемплингом
@@ -233,15 +237,13 @@ def _worker():
             # put_accent — автоматическая расстановка ударений по словарю Silero;
             # put_yo — замена «е» на «ё» где нужно. Оба заметно улучшают чистоту
             # произношения и убирают «зернистость» на сложных словах.
-            # SSML-обёртка с prosody rate="90%": Silero тянет темп через DSP без
-            # сдвига питча (в отличие от browser-side playbackRate). Экранируем
-            # &<> — после _clean остаются только буквы/цифры/пунктуация, но на
-            # всякий случай.
-            ssml_text = (
-                text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            )
+            # Синтезируем чистый текст без SSML: парсер Silero для <prosody rate>
+            # принимает только именованные значения (x-slow/slow/medium/fast/
+            # x-fast), а не проценты — прежний rate="90%" не распознавался и портил
+            # звук. Родной темп на 48 кГц звучит чище; при необходимости замедления
+            # его лучше делать browser-side через playbackRate.
             audio = _model.apply_tts(
-                ssml_text=f'<speak><prosody rate="90%">{ssml_text}</prosody></speak>',
+                text=text,
                 speaker=speaker or _SPEAKER, sample_rate=_SAMPLE_RATE,
                 put_accent=True, put_yo=True,
             )
@@ -290,10 +292,12 @@ def enqueue(text, source="generic", donation_id="", speaker=""):
     # остаётся щелчок. Донаты прозвучат целиком вне зависимости от длины.
     if is_chat and len(cleaned) < _CHAT_MIN_CHARS:
         return None
-    # Режим «озвучка всего чата» использует отдельный голос, чтобы на слух
-    # отличаться от короля и донат-сообщений.
+    # Режим «озвучка всего чата»: случайный голос на каждое сообщение, чтобы на
+    # слух было разнообразие и чат отличался от короля/донатов. Голос короля
+    # исключаем, иначе зрителя иногда не отличить от короля.
     if not speaker and source == "chat-all":
-        speaker = _SPEAKER_CHAT
+        pool = [v for v in _CHAT_VOICES if v != _SPEAKER] or list(_CHAT_VOICES)
+        speaker = random.choice(pool)
     audio_id = uuid.uuid4().hex
     queued = False
     # Атомарно: проверяем «занято?», ставим в очередь, резервируем busy. Без

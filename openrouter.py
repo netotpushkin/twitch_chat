@@ -24,7 +24,7 @@ class ContentFilteredError(OpenRouterError):
 
 
 def ask(prompt, system=None, model=None, temperature=0.7, max_tokens=512, timeout=30,
-        reasoning=None, response_format=None):
+        reasoning=None, response_format=None, provider=None):
     """Отправить один пользовательский запрос, вернуть текст ответа.
 
     prompt    — строка пользователя.
@@ -36,6 +36,8 @@ def ask(prompt, system=None, model=None, temperature=0.7, max_tokens=512, timeou
     response_format — например {"type": "json_object"} чтобы заставить модель
                 вернуть валидный JSON. Требуется, чтобы слово "json" встречалось
                 в самих сообщениях (требование OpenAI/Azure).
+    provider  — dict routing-настроек OpenRouter, например {"sort": "latency"}
+                чтобы выбрать самого быстрого провайдера (Groq/Cerebras и т.п.).
     Бросает OpenRouterError при отсутствии ключа/ошибке API/пустом ответе.
     """
     if not OPENROUTER_API_KEY:
@@ -46,11 +48,12 @@ def ask(prompt, system=None, model=None, temperature=0.7, max_tokens=512, timeou
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
     return chat(messages, model=model, temperature=temperature, max_tokens=max_tokens,
-                timeout=timeout, reasoning=reasoning, response_format=response_format)
+                timeout=timeout, reasoning=reasoning, response_format=response_format,
+                provider=provider)
 
 
 def chat(messages, model=None, temperature=0.7, max_tokens=512, timeout=30, reasoning=None,
-         response_format=None):
+         response_format=None, provider=None):
     """То же, что ask(), но принимает готовый список messages для многошаговых диалогов."""
     if not OPENROUTER_API_KEY:
         raise OpenRouterError("OPENROUTER_API_KEY не задан в .env")
@@ -65,6 +68,8 @@ def chat(messages, model=None, temperature=0.7, max_tokens=512, timeout=30, reas
         payload["reasoning"] = reasoning
     if response_format is not None:
         payload["response_format"] = response_format
+    if provider is not None:
+        payload["provider"] = provider
     body = json.dumps(payload).encode("utf-8")
 
     headers = {

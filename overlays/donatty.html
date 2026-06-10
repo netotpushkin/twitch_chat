@@ -269,11 +269,11 @@
         .then(decoded => {
           const src = ctx.createBufferSource();
           src.buffer = decoded;
-          // Короткие фейды на вход/выход (40мс): достаточно, чтобы убрать
+          // Короткие фейды на вход/выход (25мс): достаточно, чтобы убрать
           // щелчок (Silero не делает rampin/rampout, первый сэмпл может быть
           // != 0), при этом старт и хвост звучат практически без обрезки.
           const g = ctx.createGain();
-          const FADE = 0.04;
+          const FADE = 0.025;
           const t0 = ctx.currentTime;
           const t1 = t0 + decoded.duration;
           g.gain.setValueAtTime(0, t0);

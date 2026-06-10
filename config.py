@@ -40,9 +40,9 @@ DONATTY_TOKEN = os.environ.get("DONATTY_TOKEN", "")
 # TTS-голос Silero v4_ru: aidar / baya / kseniya / xenia / eugene / random.
 # Меняй в .env если хочешь другой голос; перезапуск бота подхватит.
 TTS_SPEAKER = os.environ.get("TTS_SPEAKER", "baya")
-# Голос для режима «озвучка всего чата» (!озвучка) — отличается от основного,
-# чтобы на слух было понятно, что говорит не король, а обычный зритель.
-TTS_SPEAKER_CHAT = os.environ.get("TTS_SPEAKER_CHAT", "eugene")
+# Голос для режима «озвучка всего чата» (!озвучка) выбирается случайно из голосов
+# Silero на каждое сообщение (исключая голос короля), см. tts._CHAT_VOICES —
+# отдельной настройки больше нет.
 
 # OpenRouter (https://openrouter.ai) — единый шлюз к разным LLM по OpenAI-совместимому API.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")

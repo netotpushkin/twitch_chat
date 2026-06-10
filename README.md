@@ -102,8 +102,8 @@ TITLER_MIN_MESSAGES=10
 
 # TTS-голос Silero v4_ru (aidar/baya/kseniya/xenia/eugene/random)
 TTS_SPEAKER=xenia
-# Голос для режима «озвучка всего чата» (!озвучка) — отдельный, чтобы отличался от короля
-TTS_SPEAKER_CHAT=eugene
+# Режим «озвучка всего чата» (!озвучка) выбирает голос случайно на каждое сообщение
+# (исключая голос короля) — отдельной настройки нет
 
 # Donatty — оба значения из URL виджета донатов
 # https://widgets.donatty.com/donations/?ref=<REF>&token=<TOKEN>

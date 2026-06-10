@@ -261,7 +261,7 @@ def _run_once(token, broadcaster_id, forced=False, notify=None):
 
         new_sig = (new_title, tuple(sorted(merged_tags, key=str.lower)))
         if new_title == current_title and set(merged_tags) == set(ch.get("tags") or []):
-            log.log("(titler) предложение совпадает с текущим — skip")
+            log.log("(titler) заголовок и теги совпадают с текущими — skip")
             if notify:
                 notify(SKIP_MSG)
             return
