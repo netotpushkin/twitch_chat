@@ -645,6 +645,8 @@ if __name__ == "__main__":
     print(f"YouTube-оверлей: {base}/youtube.html  (источник: /media)")
     print(f"Тест play:      {base}/test/yt/play?v=dQw4w9WgXcQ{tok}")
     print(f"Тест stop:      {base}/test/yt/stop?_=1{tok}")
+    print(f"Оверлей картинок:{base}/images.html  (источник: /images)")
+    print(f"Тест картинки:  {base}/test/image?url=https://i.imgur.com/REAL.png{tok}")
 
     # EventSub в отдельном потоке.
     threading.Thread(target=run_eventsub, args=(token, broadcaster_id, user_id), daemon=True).start()
