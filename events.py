@@ -38,5 +38,5 @@ events_bus  = Broadcaster()  # /events  — алерты (фолловеры/с�
 media_bus   = Broadcaster()  # /media   — YouTube-плеер
 dice_bus    = Broadcaster()  # /dice    — анимация броска д20
 donatty_bus = Broadcaster()  # /donatty — донаты через Donatty + TTS-события (type=tts)
-emote_bus   = Broadcaster()  # /emote_rain — поток эмоутов/эмодзи для оверлея-дождя
 goal_bus    = Broadcaster()  # /goal    — текущий сбор: цель, прогресс, заголовок
+image_bus   = Broadcaster()  # /images  — картинки/гифки от VIP/модов на оверлее

@@ -8,7 +8,7 @@
 Почему base64 в SSE, а не отдельный HTTP GET за WAV:
     OBS Browser Source / CEF использует Chromium-сеть с лимитом 6 параллельных
     HTTP/1.1-коннектов на origin. SSE-стримы оверлеев (chat/donatty/events/dice/
-    media/emote_rain) держат ровно эти 6 слотов 24/7 — любой GET /tts/audio/<id>
+    media/images) держат ровно эти 6 слотов 24/7 — любой GET /tts/audio/<id>
     встаёт в очередь и никогда не выполняется. Инлайн WAV в само событие обходит
     проблему: лишних коннектов не нужно.
 
@@ -28,6 +28,7 @@ import wave
 
 from config import TTS_SPEAKER
 from events import donatty_bus
+from textclean import normalize, strip_urls
 
 
 # ---------- Параметры синтеза ----------
@@ -107,7 +108,6 @@ _log = print  # перенастраивается в start()
 
 # ---------- Утилиты ----------
 
-_URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
 _DIGITS_RE = re.compile(r"\d+")
 _LATIN_RUN_RE = re.compile(r"[a-zA-Z]+")
@@ -163,7 +163,9 @@ def _translit_latin(text):
 def _clean(text):
     if not text:
         return ""
-    text = _URL_RE.sub("", text)
+    # Общий слой: снять обфускацию/zero-width и вырезать ссылки. Дальше — речевая
+    # подготовка под Silero (цифры→слова, транслит, печатаемые).
+    text = strip_urls(normalize(text))
     text = _digits_to_words(text)
     text = _translit_latin(text)
     text = _PRINTABLE_RE.sub(" ", text)

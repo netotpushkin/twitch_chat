@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Images</title>
+<style>
+  html, body {
+    margin:0; padding:0; background:transparent; overflow:hidden;
+    width:100vw; height:100vh;
+    font: 600 16px/1.2 "Segoe UI", system-ui, sans-serif;
+  }
+  #stage { position:fixed; inset:0; overflow:hidden; }
+  .pic {
+    position:absolute;
+    transform: translate(-50%,-50%) scale(0);
+    opacity:0;
+    pointer-events:none; user-select:none;
+    will-change: transform, opacity;
+    display:flex; flex-direction:column; align-items:center; gap:6px;
+  }
+  .pic img, .pic video {
+    display:block;
+    max-width: min(34vw, 360px);
+    max-height: min(34vh, 360px);
+    width:auto; height:auto;
+    border-radius:10px;
+    border:2px solid rgba(255,255,255,0.85);
+    box-shadow: 0 6px 22px rgba(0,0,0,0.55);
+    background:#0008;
+  }
+  .pic .who {
+    color:#fff;
+    text-shadow: 0 1px 3px #000, 0 0 8px #0009;
+    max-width: min(34vw, 360px);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .pic.in {
+    animation: pop-in 320ms cubic-bezier(.34,1.56,.64,1) forwards;
+  }
+  .pic.out {
+    transition: opacity 420ms ease-out, transform 420ms ease-out;
+    opacity:0;
+    transform: translate(-50%,-50%) scale(0.92);
+  }
+  @keyframes pop-in {
+    0%   { opacity:0; transform: translate(-50%,-50%) scale(0); }
+    60%  { opacity:1; transform: translate(-50%,-50%) scale(1.06); }
+    100% { opacity:1; transform: translate(-50%,-50%) scale(1); }
+  }
+</style></head>
+<body>
+<div id="stage"></div>
+<script>
+  const STREAM_URL = 'http://localhost:5005/images';
+  const stage = document.getElementById('stage');
+
+  const SHOW_MS = 5000;       // держим картинку на экране 5 секунд (после загрузки)
+  const POP_IN_MS = 320;
+  const FADE_OUT_MS = 420;
+  const LOAD_TIMEOUT_MS = 8000; // не дождались загрузки за это время — не показываем
+  const MAX_VIDEO_MS = 15000;   // потолок для webm: дольше не держим, даже если клип длиннее
+  const MAX_LIVE = 6;         // не больше 6 картинок одновременно
+  const AVOID = 0.45;         // насколько избегать центра кадра (0 = всюду, 1 = только края)
+
+  const VIDEO_RE = /\.(?:webm|mp4)(?:[?#]|$)/i;  // .webm/.mp4 рендерим как <video>
+
+  const live = new Set();
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  function dropOldest() {
+    const oldest = live.values().next().value;
+    if (oldest) { oldest.remove(); live.delete(oldest); }
+  }
+
+  function escapeText(s) {
+    return String(s || '').replace(/[&<>"']/g, c => (
+      { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]
+    ));
+  }
+
+  function pickPos() {
+    // Rejection sampling: чем дальше от центра по Chebyshev-метрике, тем выше шанс принять.
+    const W = window.innerWidth, H = window.innerHeight;
+    const cx = W / 2, cy = H / 2;
+    // держим отступ от краёв, чтобы крупная картинка не выходила за кадр
+    const mx = Math.min(W * 0.22, 220), my = Math.min(H * 0.22, 220);
+    let x = cx, y = cy;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      x = rand(mx, W - mx);
+      y = rand(my, H - my);
+      const score = Math.max(Math.abs(x - cx) / (W / 2), Math.abs(y - cy) / (H / 2));
+      if (Math.random() < Math.max(score, 1 - AVOID)) break;
+    }
+    return { x, y };
+  }
+
+  function spawn(url, user) {
+    if (!url) return;
+
+    const isVideo = VIDEO_RE.test(url);
+
+    // Грузим медиа «в фоне» и показываем только когда оно готово (картинка — onload,
+    // видео — loadeddata) — чтобы 5 секунд отсчитывались от момента появления на экране,
+    // а не пока оно качается. Битые/не успевшие за LOAD_TIMEOUT_MS — не показываем.
+    let media;
+    if (isVideo) {
+      media = document.createElement('video');
+      media.loop = false;            // играем один раз — ровно на длину клипа
+      media.autoplay = true;
+      media.playsInline = true;
+      media.preload = 'auto';
+      media.volume = 1.0;            // со звуком (autoplay со звуком работает в OBS Browser Source)
+    } else {
+      media = new Image();
+    }
+    media.referrerPolicy = 'no-referrer';
+
+    let settled = false;
+    const fail = () => {
+      if (settled) return; settled = true;
+      clearTimeout(failTimer);
+    };
+    const reveal = () => {
+      if (settled) return; settled = true;
+      clearTimeout(failTimer);
+      if (live.size >= MAX_LIVE) dropOldest();
+
+      const el = document.createElement('div');
+      el.className = 'pic';
+      const { x, y } = pickPos();
+      el.style.left = x + 'px';
+      el.style.top  = y + 'px';
+      el.appendChild(media);
+
+      if (user) {
+        const who = document.createElement('div');
+        who.className = 'who';
+        who.innerHTML = escapeText(user);
+        el.appendChild(who);
+      }
+
+      stage.appendChild(el);
+      live.add(el);
+      requestAnimationFrame(() => el.classList.add('in'));
+
+      let left = false;
+      const leave = () => {
+        if (left) return; left = true;
+        clearTimeout(leaveTimer);
+        el.classList.remove('in');
+        el.classList.add('out');
+        setTimeout(() => {
+          if (el.parentNode) el.remove();
+          live.delete(el);
+        }, FADE_OUT_MS);
+      };
+
+      let holdMs;
+      if (isVideo) {
+        // webm показываем ровно на длину клипа: основной триггер ухода — событие ended,
+        // а таймер по длительности — подстраховка (если ended не сработает), с потолком.
+        try { const p = media.play(); if (p) p.catch(() => {}); } catch (_) {}
+        media.onended = leave;
+        const dur = media.duration;
+        holdMs = (isFinite(dur) && dur > 0 ? Math.min(dur * 1000, MAX_VIDEO_MS) : MAX_VIDEO_MS) + 200;
+      } else {
+        holdMs = SHOW_MS;
+      }
+      const leaveTimer = setTimeout(leave, POP_IN_MS + holdMs);
+    };
+
+    if (isVideo) media.onloadeddata = reveal;
+    else         media.onload = reveal;
+    media.onerror = fail;
+    const failTimer = setTimeout(fail, LOAD_TIMEOUT_MS);
+    media.src = url;
+  }
+
+  function handle(payload) {
+    if (!payload || !payload.url) return;
+    spawn(payload.url, payload.user);
+  }
+
+  const es = new EventSource(STREAM_URL);
+  es.onmessage = (e) => {
+    try { handle(JSON.parse(e.data)); } catch (_) {}
+  };
+</script></body></html>

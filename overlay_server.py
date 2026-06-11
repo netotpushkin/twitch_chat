@@ -11,7 +11,7 @@ import threading
 import urllib.parse
 
 from config import CHANNEL, OVERLAY_PORT, OVERLAY_TOKEN
-from events import chat_bus, dice_bus, donatty_bus, emote_bus, events_bus, goal_bus, media_bus
+from events import chat_bus, dice_bus, donatty_bus, events_bus, goal_bus, image_bus, media_bus
 import goal
 import youtube
 from youtube import (
@@ -19,7 +19,7 @@ from youtube import (
 )
 
 
-STATIC_HTML = {"alerts", "chat", "dice", "donatty", "emote_rain", "goal", "webcam", "youtube"}
+STATIC_HTML = {"alerts", "chat", "dice", "donatty", "goal", "images", "webcam", "youtube"}
 
 # Содержимое HTML кэшируется при старте — на каждый GET оверлея больше не лезем на диск.
 _OVERLAY_CACHE: dict[str, bytes] = {}
@@ -121,11 +121,12 @@ def _t_goal_reset(q):
     return 200, "goal reset\n"
 
 
-def _t_emote_rain(q):
-    char = _qarg(q, "char", "🔥")
-    count = max(1, min(_qint(q, "count", 10), 200))
-    emote_bus.publish({"emotes": [{"type": "emoji", "char": char} for _ in range(count)]})
-    return 200, f"sent {count}x {char}\n"
+def _t_image(q):
+    url = _qarg(q, "url", "")
+    if not url:
+        return 400, "need ?url=<direct image url>\n"
+    image_bus.publish({"url": url, "user": _qarg(q, "user", "TestUser")})
+    return 200, f"sent image {url}\n"
 
 
 def _t_yt_play(q):
@@ -154,7 +155,7 @@ TEST_ROUTES = {
     "/test/subgift":      _t_subgift,
     "/test/donation":     _t_donation,
     "/test/goal_reset":   _t_goal_reset,
-    "/test/emote_rain":   _t_emote_rain,
+    "/test/image":        _t_image,
     "/test/yt/play":      _t_yt_play,
     "/test/yt/stop":      _t_yt_stop,
 }
@@ -238,8 +239,8 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             self._serve_stream(dice_bus, send_config=False); return
         if self.path == "/donatty":
             self._serve_stream(donatty_bus, send_config=False); return
-        if self.path == "/emote_rain":
-            self._serve_stream(emote_bus, send_config=False); return
+        if self.path == "/images":
+            self._serve_stream(image_bus, send_config=False); return
         if self.path == "/goal":
             self._serve_stream(goal_bus, send_config=False, initial_event=goal.snapshot()); return
 

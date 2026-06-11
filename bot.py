@@ -17,13 +17,18 @@ import ssl
 import sys
 import threading
 import time
+import ipaddress
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 from commands import BOT_COMMANDS
 from config import CHANNEL, CLIENT_ID, DONATTY_REF, DONATTY_TOKEN, OVERLAY_PORT, OVERLAY_TOKEN
 import dice
 import donatty
 import economy
-from events import chat_bus, dice_bus, emote_bus
+from events import chat_bus, dice_bus, image_bus
 import goal
 import king
 import log
@@ -33,7 +38,7 @@ from prompt import Prompt
 import titler
 import twitch_api
 from twitch_api import (
-    escape_html, extract_emotes, load_badges, load_credentials,
+    escape_html, load_badges, load_credentials,
     render_with_emotes, resolve_badges, role_from_badges,
 )
 import youtube
@@ -43,6 +48,86 @@ from youtube import (
 )
 from eventsub import run_eventsub
 from overlay_server import start_overlay_server
+
+
+# ---------- Картинки от VIP/модов на оверлее ----------
+
+MAX_IMAGE_BYTES = 3 * 1024 * 1024  # 3 МБ — потолок веса картинки/видео для вывода на экран
+_image_pool = ThreadPoolExecutor(max_workers=4)
+# Лимит одновременно принятых задач (выполняются + ждут в очереди). При спаме
+# ссылками лишние молча отбрасываем, чтобы очередь пула не росла неограниченно.
+_MAX_IMAGE_INFLIGHT = 10
+_image_slots = threading.BoundedSemaphore(_MAX_IMAGE_INFLIGHT)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Не следуем редиректам: цель могла бы увести на внутренний адрес (SSRF),
+    а размер/тип финального ресурса не совпал бы с проверенным."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect blocked", headers, fp)
+
+
+_image_opener = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _is_public_url(url):
+    """True только если хост резолвится в публичный IP. Внутренние/приватные/
+    loopback/link-local адреса режем — пускаем только внешние ссылки (анти-SSRF)."""
+    try:
+        host = urllib.parse.urlparse(url).hostname
+        if not host:
+            return False
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if not addr.is_global or addr.is_multicast:
+            return False
+    return True
+
+
+def _validate_and_publish_image(url, user):
+    """HEAD-запрос: показываем только внешние (публичные) image/* или video/*
+    не тяжелее MAX_IMAGE_BYTES. Внутренние адреса, редиректы и хосты без
+    Content-Length отсекаем (fail-closed). В воркер-пуле — не блокирует IRC-loop."""
+    if not _is_public_url(url):
+        return
+    try:
+        req = urllib.request.Request(
+            url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+        with _image_opener.open(req, timeout=5) as r:
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            clen = r.headers.get("Content-Length")
+            if not (ctype.startswith("image/") or ctype.startswith("video/")):
+                return
+            if clen is None or int(clen) > MAX_IMAGE_BYTES:
+                return
+    except Exception:
+        return
+    image_bus.publish({"url": url, "user": user})
+
+
+def _run_image_task(url, user):
+    try:
+        _validate_and_publish_image(url, user)
+    finally:
+        _image_slots.release()
+
+
+def _submit_image(url, user):
+    """Кладём задачу в пул, если есть свободный слот; иначе пропускаем картинку."""
+    if not _image_slots.acquire(blocking=False):
+        return  # очередь переполнена
+    try:
+        _image_pool.submit(_run_image_task, url, user)
+    except RuntimeError:
+        _image_slots.release()  # пул уже закрыт — слот не занимаем
 
 
 # ---------- Команды: антиспам по (login, cmd) ----------
@@ -326,21 +411,29 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                         else:
                             seen_logins.move_to_end(llogin)
                         if not is_command:
-                            chat_bus.publish({
-                                "type": "msg",
-                                "id": tags.get("id", ""),
-                                "login": llogin,
-                                "user": user,
-                                "color": color if _HEX_COLOR_RE.fullmatch(color or "") else _default_color(llogin),
-                                "badges": resolve_badges(tags),
-                                "html": render_with_emotes(text, tags.get("emotes", "")),
-                                "first": first_in_session,
-                                "role": role_from_badges(tags),
-                                "king": king.is_king(llogin),
-                            })
-                            emotes_list = extract_emotes(text, tags.get("emotes", ""))
-                            if emotes_list:
-                                emote_bus.publish({"emotes": emotes_list})
+                            role = role_from_badges(tags)
+                            # Ссылки на картинки/webm от VIP/мода/стримера уходят на оверлей
+                            # картинок. Само сообщение с такой ссылкой в чат-оверлей НЕ выводим
+                            # (и в дождь эмоутов тоже) — картинка показывается отдельно.
+                            img_urls = (moderation.find_image_urls(text)
+                                        if role in ("broadcaster", "mod", "vip") else [])
+                            if not img_urls:
+                                chat_bus.publish({
+                                    "type": "msg",
+                                    "id": tags.get("id", ""),
+                                    "login": llogin,
+                                    "user": user,
+                                    "color": color if _HEX_COLOR_RE.fullmatch(color or "") else _default_color(llogin),
+                                    "badges": resolve_badges(tags),
+                                    "html": render_with_emotes(text, tags.get("emotes", "")),
+                                    "first": first_in_session,
+                                    "role": role,
+                                    "king": king.is_king(llogin),
+                                })
+                            # Картинки/webm на оверлей. Вес проверяем HEAD-запросом в воркере
+                            # (не блокируем IRC-loop); очередь пула ограничена _MAX_IMAGE_INFLIGHT.
+                            for img_url in img_urls:
+                                _submit_image(img_url, user)
                             # TTS: режим "king" — озвучиваем только короля доната;
                             # "all" — каждое сообщение в чате (переключается !озвучка).
                             # Озвучиваем только после прохождения модерации — поэтому
@@ -349,6 +442,8 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                             # аргументами: колбэк сработает позже, когда переменные цикла
                             # уже укажут на другое сообщение.
                             def _voice_if_passed(text=text, llogin=llogin):
+                                # Ссылки вслух не читаются: tts._clean сам вырезает URL,
+                                # а сообщение-только-ссылка после очистки пустое и не озвучивается.
                                 if tts.get_chat_mode() == "all":
                                     tts.enqueue(text, source="chat-all")
                                 elif king.is_king(llogin):
@@ -542,8 +637,6 @@ if __name__ == "__main__":
     print(f"Тест ресаба:    {base}/test/resub?user=TestUser&months=6{tok}")
     print(f"Тест гифт-пака: {base}/test/subgift?user=TestUser&total=5{tok}")
     print(f"Тест рейда:     {base}/test/raid?user=TestUser&viewers=42{tok}")
-    print(f"Дождь эмоутов:   {base}/emote_rain.html (источник: /emote_rain)")
-    print(f"Тест дождя:     {base}/test/emote_rain?char=%F0%9F%94%A5&count=30{tok}")
     print(f"Donatty-оверлей: {base}/donatty.html  (источник: /donatty)")
     print(f"Тест доната:    {base}/test/donation?user=TestUser&amount=500&message=привет{tok}")
     print(f"Сбор-оверлей:    {base}/goal.html     (источник: /goal)")

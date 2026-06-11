@@ -22,6 +22,8 @@
 import concurrent.futures
 import re
 import threading
+import time
+from collections import OrderedDict
 
 import log
 from commands import BOT_COMMANDS as KNOWN_COMMANDS
@@ -31,6 +33,7 @@ from config import (
 )
 from openrouter import ask as llm_ask, OpenRouterError, ContentFilteredError
 from twitch_api import helix_delete_message, role_from_badges
+from textclean import URL_RE, meaningful_len, normalize, strip_urls
 
 
 # KNOWN_COMMANDS — имена команд, которые bot.py диспатчит сам; модерация их пропускает.
@@ -111,30 +114,6 @@ _YT_HOSTS = {
     "youtube-nocookie.com", "www.youtube-nocookie.com",
 }
 
-# Невидимые юникод-символы, которыми пытаются ломать регексы (ZWSP, ZWNJ, ZWJ, WJ, BOM).
-_ZERO_WIDTH_RE = re.compile("[​‌‍⁠﻿]")
-# Простые приёмы обфускации точки: " . ", "[.]", "(.)" → "."
-_DOT_OBFUSCATE_RE = re.compile(r"\s*[\[\(]\s*\.\s*[\]\)]\s*|\s+\.\s+|\s+\.\s*(?=[a-zA-Zа-яА-Я])")
-
-# Захватываем URL двумя ветками:
-#   а) явная схема http:// / https:// / www.
-#   б) host-вида X.Y[.Z…].TLD из ограниченного белого списка TLD, с обязательным
-#      слэш-путём — иначе "node.js", "vue.js", "app.py" и т.п. ложно срабатывают.
-_TLD_RE = (
-    r"com|net|org|io|co|ru|ua|by|kz|tv|gg|tk|ml|ga|cf|xyz|info|biz|me|cc|de|"
-    r"uk|us|app|dev|site|online|store|shop|club|live|stream|link|page|pro|fm"
-)
-_URL_RE = re.compile(
-    r"(?i)(?:https?://|www\.)\S+"
-    r"|(?<![\w@])[\w-]+(?:\.[\w-]+)*\.(?:" + _TLD_RE + r")\b(?:/\S*)?",
-)
-
-
-def _normalize(text):
-    text = _ZERO_WIDTH_RE.sub("", text)
-    text = _DOT_OBFUSCATE_RE.sub(".", text)
-    return text
-
 
 def _extract_host(raw):
     h = raw.lower()
@@ -146,10 +125,10 @@ def _extract_host(raw):
     return h.rstrip(".,;:!?)\"'")
 
 
-def _find_bad_url(text):
-    """Возвращает host первой не-YT ссылки или None если ссылок нет / все YouTube."""
-    norm = _normalize(text)
-    for m in _URL_RE.finditer(norm):
+def _find_bad_url(norm):
+    """Возвращает host первой не-YT ссылки или None если ссылок нет / все YouTube.
+    Принимает УЖЕ нормализованный текст (см. textclean.normalize)."""
+    for m in URL_RE.finditer(norm):
         host = _extract_host(m.group(0))
         if not host or "." not in host:
             continue
@@ -157,6 +136,28 @@ def _find_bad_url(text):
             continue
         return host
     return None
+
+
+# Прямые ссылки на картинки/гифки/webm-видео: расширение в конце пути, опц. хвост ?query/#frag.
+_IMAGE_EXT_RE = re.compile(r"(?i)\.(?:jpe?g|png|gif|webp|avif|apng|webm)(?:[?#]\S*)?$")
+
+
+def find_image_urls(text):
+    """Список прямых URL на картинки/webm-видео (по расширению) из текста.
+    Только схемные URL (http/https/www) — их можно грузить в <img>/<video> на оверлее."""
+    norm = normalize(text)
+    out = []
+    for m in URL_RE.finditer(norm):
+        raw = m.group(0).rstrip(".,;:!?)\"'")
+        low = raw.lower()
+        if low.startswith("www."):
+            raw = "https://" + raw
+            low = "https://" + low
+        if not (low.startswith("http://") or low.startswith("https://")):
+            continue  # голый host без схемы — в <img> не загрузить
+        if _IMAGE_EXT_RE.search(raw):
+            out.append(raw)
+    return out
 
 
 # ---------- LLM-вердикт ----------
@@ -181,10 +182,15 @@ _SYSTEM_PROMPT = """Ты модератор Twitch-чата. Сообщение 
 Сомневаешься — ВСЕГДА пропускай. Ответ одной строкой: "OK" или "DELETE:<причина>"."""
 
 
+# Сентинел «LLM недоступна» — отличаем от None («ok»), чтобы не кэшировать сбои.
+_LLM_UNAVAILABLE = object()
+
+
 def _llm_verdict(text):
-    """Возвращает причину нарушения (str) или None если всё ок / LLM недоступна."""
+    """Возвращает причину нарушения (str), None если всё ок, или _LLM_UNAVAILABLE
+    если модель недоступна (чтобы кэш не запомнил временный сбой как «ok»)."""
     if not OPENROUTER_API_KEY:
-        return None
+        return _LLM_UNAVAILABLE
     # Внутри маркеров вычищаем закрывающий тег, чтобы юзер не смог его подделать
     # и продолжить «после» сообщения собственными инструкциями.
     safe_text = text.replace("</MSG>", "</ MSG>")
@@ -203,7 +209,7 @@ def _llm_verdict(text):
         return "нарушение правил чата"
     except OpenRouterError as e:
         _log(f"(moderation) LLM недоступен: {e}")
-        return None
+        return _LLM_UNAVAILABLE
     reply = (reply or "").strip()
     if not reply:
         return None
@@ -216,6 +222,39 @@ def _llm_verdict(text):
     # Подрезаем длину, чтобы не отправлять в чат стену текста, если модель разговорилась.
     if len(reason) > 100:
         reason = reason[:97].rstrip() + "..."
+    return reason
+
+
+# ---------- Кэш вердиктов ----------
+# Под рейдом/копипастой один и тот же текст приходит десятками — кэшируем вердикт
+# по нормализованному (и очищенному от ссылок) тексту, чтобы не звать LLM повторно.
+_LLM_CACHE_MAX = 512
+_LLM_CACHE_TTL = 300.0  # сек
+_llm_cache = OrderedDict()  # text -> (expires_at_monotonic, reason|None)
+_llm_cache_lock = threading.Lock()
+
+
+def _llm_verdict_cached(text):
+    """Как _llm_verdict, но с LRU-кэшем по тексту (TTL). Недоступность LLM не
+    кэшируем — иначе временный сбой залип бы как «ok» на весь TTL."""
+    now = time.monotonic()
+    with _llm_cache_lock:
+        hit = _llm_cache.get(text)
+        if hit is not None:
+            expires, reason = hit
+            if expires > now:
+                _llm_cache.move_to_end(text)
+                return reason
+            del _llm_cache[text]
+    # Промах: зовём LLM ВНЕ лока (сетевой вызов ~10 с — лок держать нельзя).
+    reason = _llm_verdict(text)
+    if reason is _LLM_UNAVAILABLE:
+        return None
+    with _llm_cache_lock:
+        _llm_cache[text] = (now + _LLM_CACHE_TTL, reason)
+        _llm_cache.move_to_end(text)
+        while len(_llm_cache) > _LLM_CACHE_MAX:
+            _llm_cache.popitem(last=False)
     return reason
 
 
@@ -285,23 +324,45 @@ def _process(tags, login, text):
                 reply_text="без ASCII-арта и набивки символами, пожалуйста")
         return True
 
+    # Нормализуем один раз (zero-width + обфускация точек) и переиспользуем ниже —
+    # в URL-фильтре, проверке длины и вводе LLM.
+    clean = normalize(text)
+
     # 4. URL-фильтр: только YouTube разрешён.
-    bad = _find_bad_url(text)
+    bad = _find_bad_url(clean)
     if bad:
         _delete(tags, msg_id, login, text, f"link:{bad}",
                 reply_text="ссылки разрешены только на YouTube")
         return True
 
-    # 5. Слишком короткое — не имеет смысла гонять в LLM.
-    if len(stripped) < 5:
+    # 5. Слишком мало «полезного» содержимого — не гоняем в LLM мусор.
+    #    Считаем только буквы/цифры: невидимые символы, пунктуация и символьная
+    #    набивка длину не накручивают.
+    if meaningful_len(clean) < 5:
         return
 
     # 6. LLM-вердикт. Темы не ограничены — режем только переход черты по «градусу».
-    reason = _llm_verdict(text)
+    #    Ссылки вырезаем: они не несут смысла для модерации, только тратят токены.
+    #    Если после вырезания ссылок ничего не осталось — судить нечего, пропускаем.
+    text_for_llm = strip_urls(clean)
+    if not text_for_llm:
+        return
+    reason = _llm_verdict_cached(text_for_llm)
     if reason:
         # reason — то, что LLM написал после "DELETE:". Это и есть человекочитаемая причина.
         _delete(tags, msg_id, login, text, f"llm:{reason}", reply_text=reason)
         return True
+
+
+def _call_on_pass(on_pass):
+    """Безопасно вызвать колбэк прохождения модерации: ошибка в нём не должна
+    ронять ни воркер-поток, ни IRC-поток (fast-path зовёт его синхронно)."""
+    if on_pass is None:
+        return
+    try:
+        on_pass()
+    except Exception as e:
+        _log(f"(moderation) ошибка в on_pass: {e}")
 
 
 def _safe_process(tags, login, text, on_pass=None):
@@ -310,11 +371,8 @@ def _safe_process(tags, login, text, on_pass=None):
     except Exception as e:
         _log(f"(moderation) внутренняя ошибка: {e}")
         deleted = False  # fail-open: ошибку трактуем как «пропустить»
-    if not deleted and on_pass is not None:
-        try:
-            on_pass()
-        except Exception as e:
-            _log(f"(moderation) ошибка в on_pass: {e}")
+    if not deleted:
+        _call_on_pass(on_pass)
 
 
 def moderate(tags, login, text, on_pass=None):
@@ -326,17 +384,20 @@ def moderate(tags, login, text, on_pass=None):
     Колбэк должен быть потокобезопасным и не блокировать надолго."""
     if not MODERATION_ENABLED:
         # Модерация выключена — пропускаем всё как есть.
-        if on_pass is not None:
-            on_pass()
+        _call_on_pass(on_pass)
         return
     if _state.get("token") is None:
         # ещё не вызвали setup() — не блокируем сообщение.
-        if on_pass is not None:
-            on_pass()
+        _call_on_pass(on_pass)
+        return
+    # Привилегированных (broadcaster/mod/vip) не модерируем — не гоняем через пул и
+    # не ставим в очередь за чужими LLM-вызовами; on_pass лёгкий (постановка в TTS),
+    # зовём его сразу в этом потоке.
+    if role_from_badges(tags) in ("broadcaster", "mod", "vip"):
+        _call_on_pass(on_pass)
         return
     try:
         _executor.submit(_safe_process, tags, login, text, on_pass)
     except RuntimeError:
         # executor могли закрыть при выходе — на всякий случай пропускаем сообщение.
-        if on_pass is not None:
-            on_pass()
+        _call_on_pass(on_pass)

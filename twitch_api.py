@@ -335,8 +335,6 @@ def load_badges(token, channel_login):
 
 
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
-# Большая версия с CDN — для оверлея-дождя, чтобы не пикселило при увеличении.
-EMOTE_URL_BIG = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/3.0"
 
 
 def escape_html(s):
@@ -382,50 +380,6 @@ def render_with_emotes(text, emotes_tag):
     if cursor < total_u16:
         out.append(escape_html(slice_u16(cursor, total_u16 - 1)))
     return "".join(out)
-
-
-_EMOJI_RE = re.compile(
-    "["
-    "\U0001F1E6-\U0001F1FF"
-    "\U0001F300-\U0001F5FF"
-    "\U0001F600-\U0001F64F"
-    "\U0001F680-\U0001F6FF"
-    "\U0001F700-\U0001F77F"
-    "\U0001F780-\U0001F7FF"
-    "\U0001F800-\U0001F8FF"
-    "\U0001F900-\U0001F9FF"
-    "\U0001FA00-\U0001FAFF"
-    "\U00002600-\U000026FF"
-    "\U00002700-\U000027BF"
-    "]",
-    re.UNICODE,
-)
-
-
-def extract_emotes(text, emotes_tag):
-    """Возвращает список «частиц» из сообщения для оверлея-дождя:
-    {type:'img', url, alt} для твич-эмоутов и {type:'emoji', char} для юникод-эмодзи.
-    Порядок не важен — оверлей всё равно рандомит позиции."""
-    out = []
-    buf = text.encode("utf-16-le", errors="replace") if emotes_tag else b""
-    for entry in (emotes_tag or "").split("/"):
-        if ":" not in entry:
-            continue
-        emote_id, positions = entry.split(":", 1)
-        url = EMOTE_URL_BIG.format(id=emote_id)
-        alt = emote_id
-        ranges = [p for p in positions.split(",") if "-" in p]
-        if ranges:
-            try:
-                a, b = (int(x) for x in ranges[0].split("-", 1))
-                alt = buf[a * 2:(b + 1) * 2].decode("utf-16-le", errors="replace") or emote_id
-            except ValueError:
-                pass
-        for _ in ranges:
-            out.append({"type": "img", "url": url, "alt": alt})
-    for m in _EMOJI_RE.finditer(text):
-        out.append({"type": "emoji", "char": m.group(0)})
-    return out
 
 
 def role_from_badges(tags):
