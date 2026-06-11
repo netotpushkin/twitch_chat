@@ -70,6 +70,22 @@ def _cmd_cooldown_passed(login, cmd, now_ts):
     return True
 
 
+# Модерские команды: один общий таймер на всех (ключ — только cmd), а не per-user.
+# Пока таймер горит, та же команда от любого мода молча игнорируется. Тикает только
+# от мода — чтобы не-моды не могли вхолостую заблокировать команду. Словарь крошечный
+# (по числу модерских команд), чистка не нужна.
+MOD_COMMANDS = {"!скип", "!озвучка", "!громкость", "!заголовок"}
+_mod_cmd_cooldowns: dict[str, float] = {}
+
+
+def _mod_cmd_cooldown_passed(cmd, now_ts):
+    """True — модерскую команду можно выполнять; False — общий таймер ещё горит."""
+    if now_ts - _mod_cmd_cooldowns.get(cmd, 0.0) < CMD_COOLDOWN:
+        return False
+    _mod_cmd_cooldowns[cmd] = now_ts
+    return True
+
+
 # ---------- IRC ----------
 
 def _parse_tags(tag_str):
@@ -346,10 +362,18 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                             cparts = stripped.split()
                             cmd = cparts[0].lower()
                             args = cparts[1:]
-                            if not _cmd_cooldown_passed(llogin, cmd, time.monotonic()):
-                                continue
                             role = role_from_badges(tags)
                             is_mod = role in ("broadcaster", "mod")
+                            now_ts = time.monotonic()
+                            # Антиспам. Модерские команды — один общий таймер на всех
+                            # (ключ = cmd, тикает только от мода): пока он горит, та же
+                            # команда от любого мода игнорируется. Остальные команды —
+                            # персональный таймер (login, cmd).
+                            if cmd in MOD_COMMANDS:
+                                if is_mod and not _mod_cmd_cooldown_passed(cmd, now_ts):
+                                    continue
+                            elif not _cmd_cooldown_passed(llogin, cmd, now_ts):
+                                continue
                             if cmd == "!ютуб":
                                 if not args:
                                     safe_send(
