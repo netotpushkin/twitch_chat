@@ -237,11 +237,14 @@
   function chord(freqs, dur, _type, _gain, delay=0) { freqs.forEach(f => cling(f, dur, delay, 1 / Math.max(1, freqs.length / 1.5))); }
 
   // Звон монетки: 2 быстрые искры → длинный вибрирующий «жетон».
+  // Возвращает суммарную длительность звона в секундах (макс delay+dur среди
+  // компонентов) — нужно, чтобы озвучка не стартовала, пока звон не доиграл.
   function playDonationSound() {
     cling(2637.02, 0.35, 0.00, 0.90);    // E7 — первая искра
     cling(3520.00, 0.30, 0.06, 0.75);    // A7 — вторая, выше
-    tremolo(1318.51, 1.20, 0.14, 0.55);  // E6 — длинный «жужжащий» хвост
+    tremolo(1318.51, 1.20, 0.14, 0.55);  // E6 — длинный «жужжащий» хвост (0.14+1.20=1.34с)
     cling(2093.00, 0.80, 0.16, 0.50);    // C7 — поддержка
+    return 1.34;
   }
 
   // --- Очередь модалок, привязанная к озвучке ----------------------------
@@ -346,13 +349,19 @@
 
     const d = renderAlert(entry.payload);
     stack.appendChild(d);
-    try { playDonationSound(); } catch (_) {}
+    const tStart = performance.now();
+    let coinDur = 0;
+    try { coinDur = playDonationSound() || 0; } catch (_) {}
 
     // Время видимости = max(TTS playback, SHOW_MS). Если TTS пришёл —
     // ждём пока он доиграет; если нет — выходим по SHOW_MS как раньше.
-    const tStart = performance.now();
     const wav = await waitForAudio(entry, TTS_WAIT_MAX);
     if (wav) {
+      // Сначала звон монеты, потом озвучка. На GPU синтез приходит быстро и
+      // без этой паузы наезжал бы на звон → суммирование амплитуд и «перегруз».
+      const sinceCoin = performance.now() - tStart;
+      const waitCoin = coinDur * 1000 - sinceCoin;
+      if (waitCoin > 0) await new Promise(r => setTimeout(r, waitCoin));
       await playWavBlob(wav);
     } else {
       // дожидаем недостающее до SHOW_MS (или закрываем сразу если уже дольше)

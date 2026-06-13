@@ -136,11 +136,14 @@ def _on_donation(event):
     _log(f"(king) новый король: {subscriber} ({amount} {currency})")
 
     if _announce:
+        # Фраза про озвучку имеет смысл только в режиме "king" (озвучивается
+        # лишь король). В режиме "all" озвучивается весь чат, и упоминание, что
+        # «теперь озвучены сообщения короля», вводило бы в заблуждение — опускаем.
+        text = f"👑 @{subscriber} перехватил корону ({amount:g} {currency})"
+        if tts.get_chat_mode() != "all":
+            text += " — его сообщения в чате теперь озвучены"
         try:
-            _announce(
-                f"👑 @{subscriber} перехватил корону "
-                f"({amount:g} {currency}) — его сообщения в чате теперь озвучены"
-            )
+            _announce(text)
         except Exception as e:
             _log(f"(king) ошибка announce: {e}")
 
