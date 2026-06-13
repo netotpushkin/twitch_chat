@@ -24,7 +24,7 @@
 - **Автотитлер** (`titler.py`): периодически смотрит на чат и через LLM предлагает новый заголовок и теги, выставляет через Helix.
 - **Экономика** (`economy.py`): +монеты за сообщения (с кулдауном) и за watchtime (тикер по `/chat/chatters`). Хранится в SQLite `state/coins.db`.
 - **YouTube-очередь** (`youtube.py`): проверка ролика через oEmbed/scrape, голосование за скип с окном `YT_VOTE_WINDOW`, фоновое выполнение в пуле.
-- **TTS** (`tts.py`): Silero v4_ru (`aidar / baya / kseniya / xenia / eugene / random`), очередь, воспроизведение в `donatty.html`.
+- **TTS** (`tts.py`): Silero v4_ru (`aidar / baya / kseniya / xenia / eugene / random`), очередь, воспроизведение в `donatty.html`. Синтез автоматически идёт на GPU (CUDA), если установлен `torch` с поддержкой CUDA, иначе на CPU; выбранное устройство пишется в лог при старте.
 - **Donatty** (`donatty.py`): подключение к виджету по SSE; донаты идут в TTS и в оверлей.
 - **EventSub** (`eventsub.py`): фолловы, сабы, ресабы, гифт-паки, рейды → в оверлей алертов.
 - **Король доната** (`king.py`): корона переходит к автору **последнего** ненулевого не-анонимного доната — каждое его сообщение в чате после этого озвучивается TTS. Состояние держится в памяти, на рестарте сбрасывается.
@@ -71,6 +71,14 @@ pip install -r requirements.txt
 ```
 
 > `torch` нужен для Silero TTS. Если TTS не нужен — можно временно вырезать импорт `tts` в `bot.py` и не ставить torch.
+>
+> По умолчанию `pip install torch` ставит CPU-сборку. Чтобы синтез шёл на видеокарте NVIDIA, поставь сборку под CUDA (пример под CUDA 12.4):
+>
+> ```bash
+> pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124
+> ```
+>
+> Проверить, что GPU виден: `python -c "import torch; print(torch.cuda.is_available())"` → должно быть `True`. Устройство выбирается автоматически — ничего настраивать в коде не нужно.
 
 ### Регистрация Twitch-приложения
 
@@ -180,5 +188,5 @@ channel:manage:broadcast
 
 - Бот ходит в чат под аккаунтом стримера (один OAuth-токен). Для отдельного бот-аккаунта надо передавать его `user_id` в `moderation.setup`.
 - Модерация и кубик стучат в OpenRouter — без `OPENROUTER_API_KEY` они тихо отключаются.
-- TTS требует CPU/GPU под Silero (первый запуск качает модель).
+- TTS работает на Silero (первый запуск качает модель ~60 МБ). Синтез идёт на GPU при наличии CUDA-сборки torch, иначе на CPU — см. раздел установки.
 - Только Windows-путь к OBS в `start.bat` — для других ОС просто запускай `python bot.py` руками.

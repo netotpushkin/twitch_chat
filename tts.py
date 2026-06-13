@@ -183,7 +183,9 @@ def _tensor_to_wav(audio_tensor):
     Если пики выходят за 1.0 — нормализуем к 0.95, иначе int16-клиппинг даёт
     металлический «хруст» на громких слогах."""
     import numpy as np
-    arr = audio_tensor.numpy().astype(np.float32)
+    # .cpu() обязателен: при синтезе на GPU тензор лежит в памяти видеокарты,
+    # и .numpy() на нём падает. detach() — на случай, если тензор с градиентом.
+    arr = audio_tensor.detach().cpu().numpy().astype(np.float32)
     peak = float(np.max(np.abs(arr))) if arr.size else 0.0
     if peak > 0.95:
         arr = arr * (0.95 / peak)
@@ -215,10 +217,14 @@ def _load_model():
             speaker="v4_ru",
             trust_repo=True,
         )
-        model.to(torch.device("cpu"))
+        # Автовыбор устройства: CUDA если доступна, иначе CPU. Для GPU нужен
+        # torch со сборкой под CUDA — обычный pip-пакет на Windows ставит
+        # CPU-версию и сюда просто не попадёт.
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
         _model = model
         _model_ready.set()
-        _log(f"(tts) Silero готов, голос={_SPEAKER}")
+        _log(f"(tts) Silero готов, голос={_SPEAKER}, устройство={device}")
     except Exception as e:
         _log(f"(tts) не удалось загрузить Silero: {e}")
 
