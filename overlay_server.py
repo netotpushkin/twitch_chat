@@ -454,7 +454,9 @@ def _media_heartbeat():
     while True:
         time.sleep(1.0)
         try:
-            if yt_vote.is_playing():
+            # Пульс шлём только когда клип играет И оверлей реально подключён —
+            # незачем дёргать шину, если никто не слушает.
+            if yt_vote.is_playing() and media_bus.has_clients():
                 media_bus.publish({"evt": "tick"})
             yt_health_tick()  # громко предупредит, если позиции от оверлея перестали идти
         except Exception:

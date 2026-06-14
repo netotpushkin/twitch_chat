@@ -23,6 +23,10 @@ class Broadcaster:
             if q in self.clients:
                 self.clients.remove(q)
 
+    def has_clients(self):
+        with self.lock:
+            return bool(self.clients)
+
     def publish(self, obj):
         data = json.dumps(obj, ensure_ascii=False)
         with self.lock:

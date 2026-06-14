@@ -191,7 +191,7 @@
     + (window.OVERLAY_TOKEN ? "?token=" + encodeURIComponent(window.OVERLAY_TOKEN) : "");
 
   // Маркер версии: бот логирует его при подключении — видно, что в OBS свежая страница.
-  const OVERLAY_VERSION = 18;
+  const OVERLAY_VERSION = 19;
 
   let ws = null;
   function wsSend(obj) {
@@ -219,10 +219,13 @@
 
   // По «пульсу» сервера (tick по WS) читаем позицию плеера и шлём боту — он по ней ловит
   // реальный конец клипа (t≈d). Первые readDelay тиков плеер НЕ трогаем, чтобы не помешать
-  // загрузке клипа; пока не прочитали — позицию не шлём.
+  // загрузке клипа. Позицию шлём раз в 2 тика (~2 c) — конца хватает поймать вовремя,
+  // а обратного трафика вдвое меньше.
+  let posTick = 0;
   function onTick() {
     if (readDelay > 0) { readDelay--; return; }
     if (!player || !currentVideoId) return;
+    if (++posTick % 2) return;
     let t, d;
     try { t = Math.round(player.getCurrentTime()); d = Math.round(player.getDuration()); }
     catch (_) { return; }
