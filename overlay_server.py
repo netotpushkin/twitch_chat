@@ -200,22 +200,20 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        if send_config:
-            cfg = json.dumps({"channel": CHANNEL.lstrip("#")}, ensure_ascii=False)
-            try:
-                self.wfile.write(f"event: config\ndata: {cfg}\n\n".encode("utf-8"))
-                self.wfile.flush()
-            except OSError:
-                return
-        if initial_event is not None:
-            payload = json.dumps(initial_event, ensure_ascii=False)
-            try:
-                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
-                self.wfile.flush()
-            except OSError:
-                return
-        q = bus.subscribe()
+        # Шины с состоянием (media) подписывают атомарно вместе со снапшотом текущего
+        # состояния, чтобы переподключившийся оверлей сразу ресинхронизировался.
+        if hasattr(bus, "subscribe_with_snapshot"):
+            q, snapshot = bus.subscribe_with_snapshot()
+        else:
+            q, snapshot = bus.subscribe(), []
         try:
+            if send_config:
+                cfg = json.dumps({"channel": CHANNEL.lstrip("#")}, ensure_ascii=False)
+                self.wfile.write(f"event: config\ndata: {cfg}\n\n".encode("utf-8"))
+            for ev in ([initial_event] if initial_event is not None else []) + list(snapshot):
+                payload = json.dumps(ev, ensure_ascii=False)
+                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+            self.wfile.flush()
             while True:
                 try:
                     data = q.get(timeout=15)
@@ -279,7 +277,7 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             if not self._check_token(q):
                 self._send_text(403, "forbidden: add ?token=<OVERLAY_TOKEN>\n")
                 return
-            yt_advance()
+            yt_advance(_qarg(q, "id") or None)
             self._send_text(204, b"")
             return
         if path_only in TEST_ROUTES:

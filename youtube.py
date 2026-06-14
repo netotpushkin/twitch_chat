@@ -287,7 +287,7 @@ class YoutubeVote:
             self.voting_open = False
             self._cancel_timer()
             sk, kp = self._counts()
-            return sk, kp, sk > kp
+            return self.video_id, sk, kp, sk > kp
 
 
 yt_vote = YoutubeVote()
@@ -378,9 +378,52 @@ def yt_queue_pop():
         return yt_queue.popleft()
 
 
+# Запас сверх длительности клипа для таймера-страховки (см. _arm_watchdog).
+# Щедрый намеренно: страховка — последний рубеж, она не должна срезать клип,
+# который в нормальном режиме просто долго буферизуется.
+YT_WATCHDOG_GRACE = 60
+
+_watchdog_lock = threading.Lock()
+_clip_watchdog = None
+
+
+def _arm_watchdog(clip_id, length):
+    """Ставит таймер-страховку на конец клипа. Основной сигнал о завершении —
+    /yt/ended от оверлея; но если он потеряется (SSE отвалился, токен/ориджин не
+    совпал — оверлей не достучится до /yt/ended), сервер иначе навсегда останется
+    в состоянии «играет», и новые !ютуб будут копиться в очереди за призраком.
+    По таймеру сервер сам сделает yt_advance(clip_id) — идемпотентный: если клип
+    уже сменился, страховка просто ничего не сделает (guard по current_id)."""
+    global _clip_watchdog
+    with _watchdog_lock:
+        if _clip_watchdog is not None:
+            try: _clip_watchdog.cancel()
+            except Exception: pass
+            _clip_watchdog = None
+        if length and length > 0:
+            t = threading.Timer(length + YT_WATCHDOG_GRACE, lambda: yt_advance(clip_id))
+            t.daemon = True
+            _clip_watchdog = t
+            t.start()
+
+
+def _disarm_watchdog():
+    global _clip_watchdog
+    with _watchdog_lock:
+        if _clip_watchdog is not None:
+            try: _clip_watchdog.cancel()
+            except Exception: pass
+            _clip_watchdog = None
+
+
+def _announce_clip(item):
+    _broadcast(f"▶ «{item['title']}» — !- скип, !+ оставить")
+
+
 def yt_start_clip(item, announce=True):
     """Запускает клип в плеере, сбрасывает голосование, при announce=True пишет в чат."""
     yt_vote.start(item["id"])
+    _arm_watchdog(item["id"], item.get("length"))
     media_bus.publish({
         "evt": "play",
         "id": item["id"],
@@ -390,17 +433,38 @@ def yt_start_clip(item, announce=True):
         "volume": yt_volume(),  # чтобы переподключившийся оверлей знал текущую громкость
     })
     if announce:
-        _broadcast(f"▶ «{item['title']}» — !- скип, !+ оставить")
+        _announce_clip(item)
 
 
-def yt_advance():
-    """Берёт следующий клип из очереди. Если очередь пуста — останавливает плеер."""
-    nxt = yt_queue_pop()
+# Сериализует переход к следующему клипу. Без него конец видео (/yt/ended) и
+# закрытие голосования (таймер) могли сработать одновременно и снять из очереди
+# сразу два клипа — один проскакивал бы молча.
+_advance_lock = threading.Lock()
+
+
+def yt_advance(expect_id=None):
+    """Берёт следующий клип из очереди. Если очередь пуста — останавливает плеер.
+
+    expect_id — id клипа, который сейчас должен играть. Если он задан и не совпадает
+    с текущим (другой поток уже переключил клип), переход не выполняется. Так конец
+    видео и закрытие голосования об одном и том же клипе дают максимум один переход."""
+    nxt = None
+    with _advance_lock:
+        if expect_id is not None and yt_vote.current_id() != expect_id:
+            return
+        nxt = yt_queue_pop()
+        if nxt:
+            # Смена состояния и событие на оверлей — под локом (быстро, in-memory).
+            yt_start_clip(nxt, announce=False)
+        else:
+            yt_vote.stop()
+            _disarm_watchdog()
+            media_bus.publish({"evt": "stop"})
+    # Анонс в чат — синхронный Helix-запрос; выносим его за лок, чтобы не держать
+    # _advance_lock на время сетевого вызова (иначе он бы блокировал параллельные
+    # переходы и IRC-поток на команде !скип).
     if nxt:
-        yt_start_clip(nxt)
-    else:
-        yt_vote.stop()
-        media_bus.publish({"evt": "stop"})
+        _announce_clip(nxt)
 
 
 def yt_close_voting():
@@ -408,10 +472,10 @@ def yt_close_voting():
     result = yt_vote.close()
     if not result:
         return
-    _, _, should_skip = result
+    vid, _, _, should_skip = result
     media_bus.publish({"evt": "vote", "open": False})
     if should_skip:
-        yt_advance()
+        yt_advance(vid)
 
 
 def yt_publish_vote(r):
