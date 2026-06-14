@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "overlay",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-c", "import os; os.environ['OVERLAY_TOKEN']=''; import overlay_server, time; overlay_server.start_overlay_server(); print('up'); time.sleep(3600)"],
+      "port": 5005,
+      "autoPort": false
+    }
+  ]
+}
