@@ -334,21 +334,14 @@ YT_QUEUE_MAX = 10
 yt_queue = collections.deque()
 yt_queue_lock = threading.Lock()
 
-# Helix-объявление в чат для канало-уровневых событий (старт клипа). Сама функция
-# (см. bot.py) при сбое/отсутствии id уже падает в обычный PRIVMSG, так что
-# дополнительный fallback тут не нужен.
-_chat_broadcast = None
+# Отправка обычного сообщения в чат (PRIVMSG) — оповещение о старте клипа.
+# Задаётся из bot.py.
+_chat_send = None
 
 
-def set_chat_broadcast(fn):
-    global _chat_broadcast
-    _chat_broadcast = fn
-
-
-def _broadcast(text):
-    if _chat_broadcast:
-        try: _chat_broadcast(text)
-        except Exception: pass
+def set_chat_send(fn):
+    global _chat_send
+    _chat_send = fn
 
 
 def yt_queue_push(item):
@@ -372,11 +365,12 @@ def yt_queue_pop():
         return yt_queue.popleft()
 
 
-# Запас сверх длительности клипа для таймера-перехода (см. _arm_watchdog). Переход
-# к следующему клипу делает только сервер по этому таймеру — оверлей в OBS о конце
-# сообщить не может. Держим небольшим, чтобы пауза между клипами была пару секунд;
-# запас покрывает стартовую буферизацию плеера, чтобы не срезать ещё играющий клип.
-YT_WATCHDOG_GRACE = 5
+# ОСНОВНОЙ механизм перехода — детекция реального конца по позиции плеера (yt_report_pos):
+# оверлей по SSE-тику шлёт t/d на /yt/pos (через 127.0.0.1, см. overlay), сервер ловит t≈d.
+# Этот таймер — лишь дальняя страховка на случай, если позиции перестанут приходить
+# (оверлей отвалился / SSE порвалось). Запас с лихвой покрывает стартовую буферизацию,
+# чтобы НЕ срезать ещё играющий клип: при рабочей детекции реальный конец всегда раньше.
+YT_WATCHDOG_GRACE = 30
 
 _watchdog_lock = threading.Lock()
 _clip_watchdog = None
@@ -392,11 +386,11 @@ def _cancel_watchdog_locked():
 
 
 def _arm_watchdog(clip_id, length):
-    """Главный механизм перехода к следующему клипу: оверлей в OBS (CEF) не может
-    сообщить о конце клипа (таймеры/события плеера там не исполняются), поэтому сервер
-    сам переключает по таймеру через длительность + запас. По срабатыванию делает
-    yt_advance(clip_id) — идемпотентный: если клип уже сменился (голосованием/скипом),
-    страховка ничего не сделает (guard по current_id)."""
+    """Страховочный таймер на длительность + запас (см. YT_WATCHDOG_GRACE). В норме клип
+    переключает детекция реального конца (yt_report_pos), а этот таймер срабатывает, лишь
+    если позиции перестали приходить. По срабатыванию делает yt_advance(clip_id) —
+    идемпотентный: если клип уже сменился (реальным концом/голосованием/скипом), страховка
+    ничего не сделает (guard по current_id)."""
     global _clip_watchdog
     with _watchdog_lock:
         _cancel_watchdog_locked()
@@ -413,7 +407,9 @@ def _disarm_watchdog():
 
 
 def _announce_clip(item):
-    _broadcast(f"▶ «{item['title']}» — !- скип, !+ оставить")
+    if _chat_send:
+        try: _chat_send(f"▶ «{item['title']}» — !- скип, !+ оставить")
+        except Exception: pass
 
 
 def yt_start_clip(item, announce=True):
@@ -422,6 +418,7 @@ def yt_start_clip(item, announce=True):
     по watchdog), который иначе проходил бы молча."""
     yt_vote.start(item["id"])
     _arm_watchdog(item["id"], item.get("length"))
+    _mark_pos_seen()  # отсчёт тишины health-check ведём от старта клипа
     log.log(
         f"(youtube) play {item['id']} — {item.get('title','')!r} "
         f"({_fmt_duration(item.get('length') or 0)}, "
@@ -468,6 +465,61 @@ def yt_advance(expect_id=None):
     # переходы и IRC-поток на команде !скип).
     if nxt:
         _announce_clip(nxt)
+
+
+# Детекция реального конца по позиции, что шлёт оверлей. Состояние на текущий клип.
+_pos_lock = threading.Lock()
+_pos = {"vid": None, "t": -1, "stall": 0}
+
+# Health-check обратного канала. Пока клип играет, оверлей раз в секунду шлёт позицию.
+# Если позиций долго нет — канал оверлей→сервер сломан (как было из-за лимита соединений
+# Chromium): клип тогда переключит лишь страховочный таймер. Пишем об этом громко в лог,
+# чтобы не выяснять вслепую. _last_pos_at взводится при старте клипа (см. yt_start_clip).
+YT_POS_SILENCE_WARN = 12  # секунд тишины при играющем клипе → предупреждение
+_last_pos_at = 0.0
+_health_warned = False
+
+
+def _mark_pos_seen():
+    global _last_pos_at, _health_warned
+    _last_pos_at = time.monotonic()
+    _health_warned = False
+
+
+def yt_health_tick():
+    """Зовётся раз в секунду (из heartbeat). Один раз на клип пишет предупреждение, если
+    клип играет, а позиции от оверлея не приходят дольше YT_POS_SILENCE_WARN."""
+    global _health_warned
+    if not yt_vote.is_playing():
+        return
+    if _health_warned or not _last_pos_at:
+        return
+    silent = time.monotonic() - _last_pos_at
+    if silent > YT_POS_SILENCE_WARN:
+        _health_warned = True
+        log.log(
+            f"(youtube) ВНИМАНИЕ: {int(silent)} c нет позиций от оверлея — обратный канал "
+            f"оверлей→сервер не работает. Клип переключит только страховочный таймер "
+            f"(+{YT_WATCHDOG_GRACE}c). Проверь, что оверлей открыт и подключён по WS (/ws/media)."
+        )
+
+
+def yt_report_pos(vid, t, d):
+    """Оверлей доложил позицию плеера (t/d секунды) по пульсу. Главный механизм перехода:
+    видим реальный конец — доиграли (t≈d) или позиция замерла у конца — и переключаем."""
+    if not vid or d <= 0 or yt_vote.current_id() != vid:
+        return
+    _mark_pos_seen()
+    with _pos_lock:
+        if _pos["vid"] != vid:
+            _pos.update(vid=vid, t=-1, stall=0)
+        stalled = (t > 0 and t == _pos["t"] and t >= d - 3)
+        _pos["stall"] = _pos["stall"] + 1 if stalled else 0
+        _pos["t"] = t
+        ended = (t >= d - 1) or _pos["stall"] >= 2
+    if ended:
+        log.log(f"(youtube) реальный конец (t={t}/{d}) — перехожу")
+        yt_advance(vid)
 
 
 def yt_close_voting():

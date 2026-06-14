@@ -179,17 +179,55 @@
   </div>
 
 <script>
-  // База для SSE. При открытии из файла (file://) относительный путь ведёт в никуда,
-  // поэтому фолбэк на localhost.
-  const SSE_URL = (location.protocol === "file:" || !location.host)
-    ? "http://localhost:5005/media"
-    : "/media";
+  // Канал оверлей↔сервер — один WebSocket. Вниз: команды (play/stop/vote/volume/tick).
+  // Вверх: отчёты оверлея (hello/pos/ended). Раньше было SSE-вниз + обходной канал вверх
+  // (короткие EventSource на 127.0.0.1), потому что постоянное SSE забивало пул соединений
+  // Chromium на хост и обычные запросы вверх не проходили. Один WS снимает проблему целиком:
+  // одно соединение на обе стороны, лимит пула ни при чём, обходной хост больше не нужен.
+  const WS_URL = ((location.protocol === "file:" || !location.host)
+    ? "ws://localhost:5005"
+    : (location.protocol === "https:" ? "wss://" : "ws://") + location.host)
+    + "/ws/media"
+    + (window.OVERLAY_TOKEN ? "?token=" + encodeURIComponent(window.OVERLAY_TOKEN) : "");
+
+  // Маркер версии: бот логирует его при подключении — видно, что в OBS свежая страница.
+  const OVERLAY_VERSION = 18;
+
+  let ws = null;
+  function wsSend(obj) {
+    if (ws && ws.readyState === 1) {
+      try { ws.send(JSON.stringify(obj)); } catch (_) {}
+    }
+  }
 
   let VOLUME = 50;  // громкость плеера 0..100, меняется командой !громкость
 
   let player = null;
   let pendingCmd = null;
   let apiReady = false;
+  let currentVideoId = null;  // id играющего клипа
+  let endNotified = false;    // о конце текущего клипа уже доложили
+  let readDelay = 0;          // тиков пропустить после старта — НЕ трогаем плеер,
+                              // пока клип грузится (иначе в OBS срывается загрузка)
+
+  // Битый клип / явный конец → сразу к следующему.
+  function notifyEnded() {
+    if (!currentVideoId || endNotified) return;
+    endNotified = true;
+    wsSend({ evt: "ended", id: currentVideoId });
+  }
+
+  // По «пульсу» сервера (tick по WS) читаем позицию плеера и шлём боту — он по ней ловит
+  // реальный конец клипа (t≈d). Первые readDelay тиков плеер НЕ трогаем, чтобы не помешать
+  // загрузке клипа; пока не прочитали — позицию не шлём.
+  function onTick() {
+    if (readDelay > 0) { readDelay--; return; }
+    if (!player || !currentVideoId) return;
+    let t, d;
+    try { t = Math.round(player.getCurrentTime()); d = Math.round(player.getDuration()); }
+    catch (_) { return; }
+    wsSend({ evt: "pos", id: currentVideoId, t: t, d: d });
+  }
 
   const tag = document.createElement("script");
   tag.src = "https://www.youtube.com/iframe_api";
@@ -209,12 +247,16 @@
           if (pendingCmd) { applyCmd(pendingCmd); pendingCmd = null; }
         },
         onStateChange: (e) => {
-          if (e.data === YT.PlayerState.PLAYING) {
+          const st = e && e.data;
+          if (st === YT.PlayerState.PLAYING) {
             try { player.unMute(); player.setVolume(VOLUME); } catch (_) {}
+          } else if (st === YT.PlayerState.ENDED) {
+            notifyEnded();  // клип доиграл — ранний выход (раньше pos-детекции)
           }
         },
         onError: (e) => {
           console.error("YT error", e && e.data);
+          notifyEnded();  // битый клип — сразу к следующему
         },
       },
     });
@@ -225,6 +267,7 @@
   }
   function show() { document.getElementById("wrap").classList.add("on"); }
   function hide() {
+    currentVideoId = null;
     document.getElementById("wrap").classList.remove("on");
     if (apiReady && player && player.stopVideo) {
       try { player.stopVideo(); } catch (_) {}
@@ -268,9 +311,16 @@
       }
       return;
     }
+    if (cmd.evt === "tick") {  // пульс сервера → мягко читаем позицию плеера
+      onTick();
+      return;
+    }
     if (!apiReady || !player) { pendingCmd = cmd; return; }
     if (cmd.evt === "play") {
       voteHide();
+      currentVideoId = cmd.id || null;
+      endNotified = false;
+      readDelay = 5;  // ~5 c не трогаем плеер — даём клипу загрузиться
       if (cmd.volume != null) VOLUME = Math.max(0, Math.min(100, cmd.volume | 0));
       try { player.mute(); } catch (_) {}
       const opts = { videoId: cmd.id };
@@ -288,11 +338,13 @@
   }
 
   function connect() {
-    const es = new EventSource(SSE_URL);
-    es.onmessage = (e) => {
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => { wsSend({ evt: "hello", v: OVERLAY_VERSION }); };
+    ws.onmessage = (e) => {
       try { applyCmd(JSON.parse(e.data)); } catch (_) {}
     };
-    es.onerror = () => { es.close(); setTimeout(connect, 2000); };
+    ws.onclose = () => { setTimeout(connect, 2000); };  // обрыв → переподключаемся
+    ws.onerror = () => { try { ws.close(); } catch (_) {} };  // ошибка → закрыть (вызовет onclose)
   }
   connect();
 </script>

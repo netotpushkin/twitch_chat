@@ -1,21 +1,80 @@
-"""Локальный HTTP-сервер: SSE-стримы для оверлеев, статика, тестовые эндпойнты."""
+"""Локальный HTTP-сервер: SSE-стримы для оверлеев, WebSocket для медиа, статика, тесты."""
 
+import base64
+import hashlib
 import hmac
 import http.server
 import json
 import os
 import queue
 import re
+import struct
 import sys
 import threading
+import time
 import urllib.parse
 
 from config import CHANNEL, OVERLAY_PORT, OVERLAY_TOKEN
 from events import chat_bus, dice_bus, donatty_bus, events_bus, goal_bus, image_bus, media_bus
 import goal
+import log
 from youtube import (
-    parse_youtube_id, yt_queue, yt_queue_lock, yt_vote,
+    parse_youtube_id, yt_advance, yt_health_tick, yt_queue, yt_queue_lock,
+    yt_report_pos, yt_vote,
 )
+
+
+# ---------- WebSocket (RFC 6455) — рукопашно поверх http.server, без зависимостей ----------
+# Нужен для медиа-канала (youtube): одно двунаправленное соединение вместо SSE-вниз +
+# обходного канала вверх. Так не упираемся в лимит соединений Chromium на хост (из-за
+# которого постоянное SSE забивало пул и запросы оверлей→сервер не проходили).
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept(key):
+    return base64.b64encode(hashlib.sha1((key + _WS_GUID).encode()).digest()).decode()
+
+
+def _ws_encode(payload, opcode=0x1):
+    """Кадр сервер→клиент (без маски). opcode: 0x1 text, 0x8 close, 0x9 ping, 0xA pong."""
+    out = bytearray([0x80 | opcode])
+    n = len(payload)
+    if n < 126:
+        out.append(n)
+    elif n < 65536:
+        out.append(126); out += struct.pack(">H", n)
+    else:
+        out.append(127); out += struct.pack(">Q", n)
+    out += payload
+    return bytes(out)
+
+
+def _ws_read_frame(rfile):
+    """Читает один кадр клиент→сервер. Возвращает (opcode, payload_bytes) или None при
+    закрытии/обрыве. Кадры от клиента всегда маскированы — снимаем маску."""
+    hdr = rfile.read(2)
+    if len(hdr) < 2:
+        return None
+    masked = hdr[1] & 0x80
+    n = hdr[1] & 0x7f
+    if n == 126:
+        ext = rfile.read(2)
+        if len(ext) < 2:
+            return None
+        n = struct.unpack(">H", ext)[0]
+    elif n == 127:
+        ext = rfile.read(8)
+        if len(ext) < 8:
+            return None
+        n = struct.unpack(">Q", ext)[0]
+    mask = rfile.read(4) if masked else b""
+    data = rfile.read(n) if n else b""
+    if len(data) < n or (masked and len(mask) < 4):
+        return None
+    if masked:
+        data = bytes(data[i] ^ mask[i % 4] for i in range(n))
+    return hdr[0] & 0x0f, data
 
 
 STATIC_HTML = {"alerts", "chat", "dice", "donatty", "goal", "images", "webcam", "youtube"}
@@ -230,13 +289,94 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
         finally:
             bus.unsubscribe(q)
 
+    def _serve_websocket(self, bus):
+        """Двунаправленный канал для медиа-оверлея. Вниз: команды из bus (play/stop/tick/…)
+        + снапшот текущего состояния при подключении. Вверх: отчёты оверлея (hello/pos/ended).
+        Один сокет на обе стороны — мимо лимита соединений Chromium на хост."""
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key:
+            self.send_response(400); self.end_headers(); return
+        # Рукопожатие пишем вручную: WebSocket требует статус-строку HTTP/1.1, а у сервера
+        # protocol_version="HTTP/1.0" (менять его глобально нельзя — сломает SSE/статику,
+        # которые шлются без Content-Length).
+        self.wfile.write((
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {_ws_accept(key)}\r\n"
+            "\r\n"
+        ).encode("ascii"))
+        self.wfile.flush()
+
+        q, snapshot = bus.subscribe_with_snapshot()
+        send_lock = threading.Lock()
+        alive = threading.Event(); alive.set()
+
+        def send_text(s):
+            frame = _ws_encode(s.encode("utf-8"), 0x1)
+            with send_lock:
+                self.wfile.write(frame); self.wfile.flush()
+
+        def writer():
+            # Снапшот состояния → потом события из шины. Пустой get-таймаут шлёт ping,
+            # чтобы держать соединение и быстро замечать обрыв.
+            try:
+                for ev in snapshot:
+                    send_text(json.dumps(ev, ensure_ascii=False))
+                while alive.is_set():
+                    try:
+                        send_text(q.get(timeout=15))
+                    except queue.Empty:
+                        with send_lock:
+                            self.wfile.write(_ws_encode(b"", 0x9)); self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                alive.clear()
+
+        wt = threading.Thread(target=writer, daemon=True)
+        wt.start()
+        try:
+            while alive.is_set():
+                frame = _ws_read_frame(self.rfile)
+                if frame is None:
+                    break
+                opcode, data = frame
+                if opcode == 0x8:           # close
+                    break
+                if opcode == 0x9:           # ping → pong
+                    with send_lock:
+                        self.wfile.write(_ws_encode(data, 0xA)); self.wfile.flush()
+                    continue
+                if opcode != 0x1:           # игнорируем pong/бинарь/продолжение
+                    continue
+                try:
+                    msg = json.loads(data.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                self._handle_ws_message(msg)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            alive.clear()
+            bus.unsubscribe(q)
+            self.close_connection = True  # не пытаться читать следующий запрос из ws-сокета
+
+    def _handle_ws_message(self, msg):
+        """Отчёт оверлея по WS. Аналог прежних /yt/hello, /yt/pos, /yt/ended."""
+        evt = msg.get("evt")
+        if evt == "pos":
+            try: t, d = int(msg.get("t", -1)), int(msg.get("d", -1))
+            except (TypeError, ValueError): return
+            yt_report_pos(msg.get("id") or None, t, d)
+        elif evt == "ended":
+            yt_advance(msg.get("id") or None)
+        elif evt == "hello":
+            log.log(f"(youtube) overlay подключился (ws), версия страницы v={msg.get('v', '?')}")
+
     def do_GET(self):
         if self.path == "/stream":
             self._serve_stream(chat_bus, send_config=True);  return
         if self.path == "/events":
             self._serve_stream(events_bus, send_config=True); return
-        if self.path == "/media":
-            self._serve_stream(media_bus, send_config=False); return
         if self.path == "/dice":
             self._serve_stream(dice_bus, send_config=False); return
         if self.path == "/donatty":
@@ -247,6 +387,12 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             self._serve_stream(goal_bus, send_config=False, initial_event=goal.snapshot()); return
 
         path_only = urllib.parse.urlparse(self.path).path
+        if path_only == "/ws/media":
+            q = _qs(self.path)
+            if not self._check_token(q):
+                self.send_response(403); self.end_headers(); return
+            self._serve_websocket(media_bus); return
+
         name = path_only.lstrip("/")
         if not name and self.path == "/":
             name = "index"
@@ -301,10 +447,27 @@ class _QuietHTTPServer(http.server.ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+def _media_heartbeat():
+    """Пульс для оверлея: пока клип играет, раз в секунду шлём tick по SSE. По тику
+    оверлей читает позицию плеера и шлёт её в /yt/pos, по чему сервер ловит реальный
+    конец клипа (onmessage у SSE в OBS CEF работает надёжно)."""
+    while True:
+        time.sleep(1.0)
+        try:
+            if yt_vote.is_playing():
+                media_bus.publish({"evt": "tick"})
+            yt_health_tick()  # громко предупредит, если позиции от оверлея перестали идти
+        except Exception:
+            pass
+
+
 def start_overlay_server():
     _preload_overlays()
     if not OVERLAY_TOKEN:
         print("(!) OVERLAY_TOKEN пуст — write-эндпойнты доступны только same-origin "
               f"(http://localhost:{OVERLAY_PORT}). Установи OVERLAY_TOKEN для жёсткой защиты.")
-    srv = _QuietHTTPServer(("localhost", OVERLAY_PORT), _OverlayHandler)
+    # Слушаем явно на 127.0.0.1 (а не "localhost", который на Windows может резолвиться
+    # в ::1): и localhost, и 127.0.0.1 от клиента сюда попадают (Happy Eyeballs).
+    srv = _QuietHTTPServer(("127.0.0.1", OVERLAY_PORT), _OverlayHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=_media_heartbeat, daemon=True).start()
