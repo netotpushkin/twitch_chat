@@ -507,9 +507,13 @@ def yt_health_tick():
 def yt_report_pos(vid, t, d):
     """Оверлей доложил позицию плеера (t/d секунды) по пульсу. Главный механизм перехода:
     видим реальный конец — доиграли (t≈d) или позиция замерла у конца — и переключаем."""
-    if not vid or d <= 0 or yt_vote.current_id() != vid:
+    if not vid or yt_vote.current_id() != vid:
         return
+    # Канал жив — отмечаем независимо от валидности d: при буферизации getDuration ещё 0,
+    # но оверлей уже шлёт pos. Иначе health-check ложно решил бы, что канал умер.
     _mark_pos_seen()
+    if d <= 0:
+        return  # длительность ещё не известна — для детекции конца рано
     with _pos_lock:
         if _pos["vid"] != vid:
             _pos.update(vid=vid, t=-1, stall=0)

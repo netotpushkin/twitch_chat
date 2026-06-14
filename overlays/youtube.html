@@ -191,13 +191,14 @@
     + (window.OVERLAY_TOKEN ? "?token=" + encodeURIComponent(window.OVERLAY_TOKEN) : "");
 
   // Маркер версии: бот логирует его при подключении — видно, что в OBS свежая страница.
-  const OVERLAY_VERSION = 20;
+  const OVERLAY_VERSION = 21;
 
   let ws = null;
-  function wsSend(obj) {
+  function wsSend(obj) {  // true — если отправлено (WS открыт), иначе false
     if (ws && ws.readyState === 1) {
-      try { ws.send(JSON.stringify(obj)); } catch (_) {}
+      try { ws.send(JSON.stringify(obj)); return true; } catch (_) {}
     }
+    return false;
   }
 
   let VOLUME = 50;  // громкость плеера 0..100, меняется командой !громкость
@@ -214,8 +215,9 @@
   // Битый клип / явный конец → сразу к следующему.
   function notifyEnded() {
     if (!currentVideoId || endNotified) return;
-    endNotified = true;
-    wsSend({ evt: "ended", id: currentVideoId });
+    // endNotified ставим только если сигнал реально ушёл: при закрытом WS не теряем конец —
+    // повторим, когда соединение восстановится (или подхватит pos-детекция).
+    if (wsSend({ evt: "ended", id: currentVideoId })) endNotified = true;
   }
 
   // По «пульсу» сервера (tick по WS) читаем позицию плеера и шлём боту — он по ней ловит
