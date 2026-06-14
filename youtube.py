@@ -518,8 +518,7 @@ def yt_report_pos(vid, t, d):
         _pos["t"] = t
         ended = (t >= d - 1) or _pos["stall"] >= 2
     if ended:
-        log.log(f"(youtube) реальный конец (t={t}/{d}) — перехожу")
-        yt_advance(vid)
+        yt_advance(vid)  # переход виден по следующему 'play …' / 'очередь пуста …'
 
 
 def yt_close_voting():
