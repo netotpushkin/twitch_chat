@@ -180,7 +180,7 @@
 
 <script>
   // Канал оверлей↔сервер — один WebSocket. Вниз: команды (play/stop/vote/volume/tick).
-  // Вверх: отчёты оверлея (hello/pos/ended). Раньше было SSE-вниз + обходной канал вверх
+  // Вверх: отчёты оверлея (pos/ended). Раньше было SSE-вниз + обходной канал вверх
   // (короткие EventSource на 127.0.0.1), потому что постоянное SSE забивало пул соединений
   // Chromium на хост и обычные запросы вверх не проходили. Один WS снимает проблему целиком:
   // одно соединение на обе стороны, лимит пула ни при чём, обходной хост больше не нужен.
@@ -189,9 +189,6 @@
     : (location.protocol === "https:" ? "wss://" : "ws://") + location.host)
     + "/ws/media"
     + (window.OVERLAY_TOKEN ? "?token=" + encodeURIComponent(window.OVERLAY_TOKEN) : "");
-
-  // Маркер версии: бот логирует его при подключении — видно, что в OBS свежая страница.
-  const OVERLAY_VERSION = 21;
 
   let ws = null;
   function wsSend(obj) {  // true — если отправлено (WS открыт), иначе false
@@ -351,7 +348,6 @@
 
   function connect() {
     ws = new WebSocket(WS_URL);
-    ws.onopen = () => { wsSend({ evt: "hello", v: OVERLAY_VERSION }); };
     ws.onmessage = (e) => {
       try { applyCmd(JSON.parse(e.data)); } catch (_) {}
     };

@@ -17,7 +17,6 @@ import urllib.parse
 from config import CHANNEL, OVERLAY_PORT, OVERLAY_TOKEN
 from events import chat_bus, dice_bus, donatty_bus, events_bus, goal_bus, image_bus, media_bus
 import goal
-import log
 from youtube import (
     parse_youtube_id, yt_advance, yt_health_tick, yt_queue, yt_queue_lock,
     yt_report_pos, yt_vote,
@@ -291,7 +290,7 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
 
     def _serve_websocket(self, bus):
         """Двунаправленный канал для медиа-оверлея. Вниз: команды из bus (play/stop/tick/…)
-        + снапшот текущего состояния при подключении. Вверх: отчёты оверлея (hello/pos/ended).
+        + снапшот текущего состояния при подключении. Вверх: отчёты оверлея (pos/ended).
         Один сокет на обе стороны — мимо лимита соединений Chromium на хост."""
         key = self.headers.get("Sec-WebSocket-Key")
         if not key:
@@ -371,7 +370,7 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True  # не пытаться читать следующий запрос из ws-сокета
 
     def _handle_ws_message(self, msg):
-        """Отчёт оверлея по WS. Аналог прежних /yt/hello, /yt/pos, /yt/ended."""
+        """Отчёт оверлея по WS: позиция плеера (pos) и конец/битый клип (ended)."""
         evt = msg.get("evt")
         if evt == "pos":
             try: t, d = int(msg.get("t", -1)), int(msg.get("d", -1))
@@ -379,8 +378,6 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             yt_report_pos(msg.get("id") or None, t, d)
         elif evt == "ended":
             yt_advance(msg.get("id") or None)
-        elif evt == "hello":
-            log.log(f"(youtube) overlay подключился (ws), версия страницы v={msg.get('v', '?')}")
 
     def do_GET(self):
         if self.path == "/stream":
