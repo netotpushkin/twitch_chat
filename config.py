@@ -95,6 +95,6 @@ def _load_overlay_token():
     return tok
 
 
-# Токен для /test/* и /yt/ended — защищает от случайных вызовов другими локальными процессами.
+# Токен для /test/* и /ws/media — защищает от случайных вызовов другими локальными процессами.
 # OVERLAY_TOKEN= (пустая строка) в env отключает проверку.
 OVERLAY_TOKEN = _load_overlay_token()

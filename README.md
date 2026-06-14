@@ -53,7 +53,7 @@
 | `tts.py` | Silero TTS, очередь воспроизведения. |
 | `donatty.py` | SSE-клиент Donatty. |
 | `openrouter.py` | Клиент OpenRouter (LLM-шлюз). |
-| `overlay_server.py` | Локальный HTTP: SSE-стримы, статика, `/test/*`. |
+| `overlay_server.py` | Локальный HTTP: SSE-стримы оверлеев, WebSocket медиа-плеера (`/ws/media`), статика, `/test/*`. |
 | `events.py` | Внутренние шины (`chat_bus`, `events_bus`, `dice_bus`, ...). |
 | `prompt.py` | Интерактивный ввод в терминале (для отправки в чат). |
 | `log.py`, `http_pool.py` | Утилиты. |

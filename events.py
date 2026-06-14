@@ -40,7 +40,7 @@ class Broadcaster:
 
 class MediaBroadcaster(Broadcaster):
     """Broadcaster, который запоминает текущее состояние плеера и отдаёт его новому
-    подписчику. Нужно, чтобы переподключившийся оверлей (реконнект SSE, смена сцены
+    подписчику. Нужно, чтобы переподключившийся оверлей (реконнект WS, смена сцены
     в OBS) сразу ресинхронизировался: показал играющий клип с нужной позиции/громкости
     или остался скрытым, если ничего не играет. Без этого единственное событие play/stop
     могло прийти в момент, когда оверлей был отключён, и потеряться навсегда."""
@@ -90,7 +90,7 @@ class MediaBroadcaster(Broadcaster):
 
 chat_bus    = Broadcaster()  # /stream  — обычный чат
 events_bus  = Broadcaster()  # /events  — алерты (фолловеры/сабы/рейды)
-media_bus   = MediaBroadcaster()  # /media   — YouTube-плеер
+media_bus   = MediaBroadcaster()  # /ws/media — YouTube-плеер (WebSocket, двунаправленно)
 dice_bus    = Broadcaster()  # /dice    — анимация броска д20
 donatty_bus = Broadcaster()  # /donatty — донаты через Donatty + TTS-события (type=tts)
 goal_bus    = Broadcaster()  # /goal    — текущий сбор: цель, прогресс, заголовок
