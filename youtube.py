@@ -9,6 +9,7 @@ import time
 import urllib.parse
 
 import http_pool
+import log
 from events import media_bus
 
 
@@ -108,6 +109,10 @@ def fetch_youtube_meta(video_id):
             "length": int(vd.get("lengthSeconds", "0") or 0),
             "live":   bool(vd.get("isLiveContent") or vd.get("isLive")),
             "short":  is_short,
+            # playableInEmbed=false → владелец запретил воспроизведение в embed;
+            # на youtube.com открывается, а в плеере оверлея будет чёрный экран.
+            # Ключа может не быть — тогда считаем встраиваемым (не режем зря).
+            "embeddable": bool(ps.get("playableInEmbed", True)),
         }
     except (ValueError, TypeError):
         return None
@@ -137,6 +142,8 @@ def check_youtube_clip(video_id):
     status = meta["status"]
     if status and status != "OK":
         return False, _YT_STATUS_MSG.get(status, "видео недоступно для просмотра")
+    if not meta.get("embeddable", True):
+        return False, "владелец запретил воспроизведение этого видео вне YouTube"
     if meta["live"]:
         return False, "это live-трансляция, нужен записанный клип"
     if meta["short"]:
@@ -327,16 +334,10 @@ YT_QUEUE_MAX = 10
 yt_queue = collections.deque()
 yt_queue_lock = threading.Lock()
 
-# Глобальный «динамик» в чат — присваивается run_chat через set_chat_announce.
-# _chat_announce — обычный PRIVMSG (ответы пользователю), _chat_broadcast — Helix-объявление
-# для канало-уровневых событий вроде старта клипа. Если broadcast не задан — fallback на say.
-_chat_announce = None
+# Helix-объявление в чат для канало-уровневых событий (старт клипа). Сама функция
+# (см. bot.py) при сбое/отсутствии id уже падает в обычный PRIVMSG, так что
+# дополнительный fallback тут не нужен.
 _chat_broadcast = None
-
-
-def set_chat_announce(fn):
-    global _chat_announce
-    _chat_announce = fn
 
 
 def set_chat_broadcast(fn):
@@ -344,16 +345,9 @@ def set_chat_broadcast(fn):
     _chat_broadcast = fn
 
 
-def _say(text):
-    if _chat_announce:
-        try: _chat_announce(text)
-        except Exception: pass
-
-
 def _broadcast(text):
-    fn = _chat_broadcast or _chat_announce
-    if fn:
-        try: fn(text)
+    if _chat_broadcast:
+        try: _chat_broadcast(text)
         except Exception: pass
 
 
@@ -378,28 +372,34 @@ def yt_queue_pop():
         return yt_queue.popleft()
 
 
-# Запас сверх длительности клипа для таймера-страховки (см. _arm_watchdog).
-# Щедрый намеренно: страховка — последний рубеж, она не должна срезать клип,
-# который в нормальном режиме просто долго буферизуется.
-YT_WATCHDOG_GRACE = 60
+# Запас сверх длительности клипа для таймера-перехода (см. _arm_watchdog). Переход
+# к следующему клипу делает только сервер по этому таймеру — оверлей в OBS о конце
+# сообщить не может. Держим небольшим, чтобы пауза между клипами была пару секунд;
+# запас покрывает стартовую буферизацию плеера, чтобы не срезать ещё играющий клип.
+YT_WATCHDOG_GRACE = 5
 
 _watchdog_lock = threading.Lock()
 _clip_watchdog = None
 
 
+def _cancel_watchdog_locked():
+    """Снимает текущий таймер. Вызывать под _watchdog_lock."""
+    global _clip_watchdog
+    if _clip_watchdog is not None:
+        try: _clip_watchdog.cancel()
+        except Exception: pass
+        _clip_watchdog = None
+
+
 def _arm_watchdog(clip_id, length):
-    """Ставит таймер-страховку на конец клипа. Основной сигнал о завершении —
-    /yt/ended от оверлея; но если он потеряется (SSE отвалился, токен/ориджин не
-    совпал — оверлей не достучится до /yt/ended), сервер иначе навсегда останется
-    в состоянии «играет», и новые !ютуб будут копиться в очереди за призраком.
-    По таймеру сервер сам сделает yt_advance(clip_id) — идемпотентный: если клип
-    уже сменился, страховка просто ничего не сделает (guard по current_id)."""
+    """Главный механизм перехода к следующему клипу: оверлей в OBS (CEF) не может
+    сообщить о конце клипа (таймеры/события плеера там не исполняются), поэтому сервер
+    сам переключает по таймеру через длительность + запас. По срабатыванию делает
+    yt_advance(clip_id) — идемпотентный: если клип уже сменился (голосованием/скипом),
+    страховка ничего не сделает (guard по current_id)."""
     global _clip_watchdog
     with _watchdog_lock:
-        if _clip_watchdog is not None:
-            try: _clip_watchdog.cancel()
-            except Exception: pass
-            _clip_watchdog = None
+        _cancel_watchdog_locked()
         if length and length > 0:
             t = threading.Timer(length + YT_WATCHDOG_GRACE, lambda: yt_advance(clip_id))
             t.daemon = True
@@ -408,12 +408,8 @@ def _arm_watchdog(clip_id, length):
 
 
 def _disarm_watchdog():
-    global _clip_watchdog
     with _watchdog_lock:
-        if _clip_watchdog is not None:
-            try: _clip_watchdog.cancel()
-            except Exception: pass
-            _clip_watchdog = None
+        _cancel_watchdog_locked()
 
 
 def _announce_clip(item):
@@ -421,9 +417,16 @@ def _announce_clip(item):
 
 
 def yt_start_clip(item, announce=True):
-    """Запускает клип в плеере, сбрасывает голосование, при announce=True пишет в чат."""
+    """Запускает клип в плеере, сбрасывает голосование, при announce=True пишет в чат.
+    Лог пишется здесь, чтобы был виден ЛЮБОЙ старт — и ручной, и авто (из очереди /
+    по watchdog), который иначе проходил бы молча."""
     yt_vote.start(item["id"])
     _arm_watchdog(item["id"], item.get("length"))
+    log.log(
+        f"(youtube) play {item['id']} — {item.get('title','')!r} "
+        f"({_fmt_duration(item.get('length') or 0)}, "
+        f"{item.get('views', 0):,} views)".replace(",", " ")
+    )
     media_bus.publish({
         "evt": "play",
         "id": item["id"],
@@ -436,9 +439,8 @@ def yt_start_clip(item, announce=True):
         _announce_clip(item)
 
 
-# Сериализует переход к следующему клипу. Без него конец видео (/yt/ended) и
-# закрытие голосования (таймер) могли сработать одновременно и снять из очереди
-# сразу два клипа — один проскакивал бы молча.
+# Сериализует переход к следующему клипу. Без него watchdog-таймер и закрытие
+# голосования могли сработать одновременно и снять из очереди сразу два клипа.
 _advance_lock = threading.Lock()
 
 
@@ -446,8 +448,8 @@ def yt_advance(expect_id=None):
     """Берёт следующий клип из очереди. Если очередь пуста — останавливает плеер.
 
     expect_id — id клипа, который сейчас должен играть. Если он задан и не совпадает
-    с текущим (другой поток уже переключил клип), переход не выполняется. Так конец
-    видео и закрытие голосования об одном и том же клипе дают максимум один переход."""
+    с текущим (другой поток уже переключил клип), переход не выполняется. Так watchdog
+    и закрытие голосования об одном и том же клипе дают максимум один переход."""
     nxt = None
     with _advance_lock:
         if expect_id is not None and yt_vote.current_id() != expect_id:
@@ -460,6 +462,7 @@ def yt_advance(expect_id=None):
             yt_vote.stop()
             _disarm_watchdog()
             media_bus.publish({"evt": "stop"})
+            log.log("(youtube) очередь пуста — плеер остановлен")
     # Анонс в чат — синхронный Helix-запрос; выносим его за лок, чтобы не держать
     # _advance_lock на время сетевого вызова (иначе он бы блокировал параллельные
     # переходы и IRC-поток на команде !скип).
@@ -524,12 +527,7 @@ def handle_youtube_command(raw_arg, user, safe_send, prompt):
             )
             prompt.print(f"(youtube) queue #{pos}: {vid}")
     else:
-        yt_start_clip(item)
-        prompt.print(
-            f"(youtube) play {vid} — {info['title']!r} "
-            f"({_fmt_duration(info['length'])}, "
-            f"{info['views']:,} views)".replace(",", " ")
-        )
+        yt_start_clip(item)  # лог старта пишется внутри yt_start_clip
 
 
 def submit_youtube_command(raw_arg, user, safe_send, prompt):

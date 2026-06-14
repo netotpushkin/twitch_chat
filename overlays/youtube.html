@@ -179,6 +179,8 @@
   </div>
 
 <script>
+  // База для SSE. При открытии из файла (file://) относительный путь ведёт в никуда,
+  // поэтому фолбэк на localhost.
   const SSE_URL = (location.protocol === "file:" || !location.host)
     ? "http://localhost:5005/media"
     : "/media";
@@ -188,33 +190,6 @@
   let player = null;
   let pendingCmd = null;
   let apiReady = false;
-  let currentVideoId = null;  // id играющего клипа — шлём обратно в /yt/ended
-  let endedFallbackTimer = null;
-
-  function notifyEnded() {
-    // Без id нечего «завершать»: клип уже скрыт/сменён. Слать /yt/ended без id
-    // нельзя — сервер трактует это как безусловный переход и может срезать клип,
-    // который тем временем уже стартовал (запоздалый onError после stopVideo).
-    if (!currentVideoId) return;
-    const params = new URLSearchParams({ id: currentVideoId });
-    if (window.OVERLAY_TOKEN) params.set("token", window.OVERLAY_TOKEN);
-    fetch("/yt/ended?" + params.toString(), { method: "GET", keepalive: true }).catch(() => {});
-  }
-
-  function clearEndedFallback() {
-    if (endedFallbackTimer) { clearTimeout(endedFallbackTimer); endedFallbackTimer = null; }
-  }
-
-  // Подстраховка: клип доиграл, мы дёрнули /yt/ended и ждём от сервера play (следующий
-  // клип) или stop. Если ответ не пришёл (SSE-соединение отвалилось, /yt/ended не дошёл),
-  // через пару секунд прячемся сами — иначе оверлей завис бы на последнем кадре.
-  function scheduleEndedFallback(endedId) {
-    clearEndedFallback();
-    endedFallbackTimer = setTimeout(() => {
-      endedFallbackTimer = null;
-      if (currentVideoId === endedId) hide();  // сервер так и не переключил — прячемся
-    }, 2500);
-  }
 
   const tag = document.createElement("script");
   tag.src = "https://www.youtube.com/iframe_api";
@@ -237,15 +212,9 @@
           if (e.data === YT.PlayerState.PLAYING) {
             try { player.unMute(); player.setVolume(VOLUME); } catch (_) {}
           }
-          if (e.data === YT.PlayerState.ENDED) {
-            notifyEnded();
-            scheduleEndedFallback(currentVideoId);
-          }
         },
         onError: (e) => {
           console.error("YT error", e && e.data);
-          notifyEnded();
-          scheduleEndedFallback(currentVideoId);
         },
       },
     });
@@ -256,9 +225,7 @@
   }
   function show() { document.getElementById("wrap").classList.add("on"); }
   function hide() {
-    clearEndedFallback();
     document.getElementById("wrap").classList.remove("on");
-    currentVideoId = null;
     if (apiReady && player && player.stopVideo) {
       try { player.stopVideo(); } catch (_) {}
     }
@@ -304,8 +271,6 @@
     if (!apiReady || !player) { pendingCmd = cmd; return; }
     if (cmd.evt === "play") {
       voteHide();
-      clearEndedFallback();  // сервер переключил клип сам — подстраховка не нужна
-      currentVideoId = cmd.id || null;
       if (cmd.volume != null) VOLUME = Math.max(0, Math.min(100, cmd.volume | 0));
       try { player.mute(); } catch (_) {}
       const opts = { videoId: cmd.id };

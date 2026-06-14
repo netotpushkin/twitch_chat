@@ -315,7 +315,6 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
             prompt.print(f"(announce упал: {type(e).__name__}: {e}) — пишу обычным сообщением")
             safe_send(text)
 
-    youtube.set_chat_announce(safe_send)
     youtube.set_chat_broadcast(lambda text: announce(text, color="orange"))
     # Стример сам себе модератор; для отдельного бота сюда нужно передать его user_id.
     # send=safe_send — чтобы при удалении бот мог написать в чат "@user, причина".

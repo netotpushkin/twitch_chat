@@ -13,9 +13,8 @@ import urllib.parse
 from config import CHANNEL, OVERLAY_PORT, OVERLAY_TOKEN
 from events import chat_bus, dice_bus, donatty_bus, events_bus, goal_bus, image_bus, media_bus
 import goal
-import youtube
 from youtube import (
-    parse_youtube_id, yt_advance, yt_queue, yt_queue_lock, yt_vote,
+    parse_youtube_id, yt_queue, yt_queue_lock, yt_vote,
 )
 
 
@@ -162,15 +161,13 @@ TEST_ROUTES = {
 
 
 class _OverlayHandler(http.server.BaseHTTPRequestHandler):
-    def _check_token(self, q):
-        """Защита write-эндпойнтов. Если OVERLAY_TOKEN пуст — допускаем только запросы
-        без cross-origin Origin/Referer ИЛИ с Origin/Referer на наш собственный порт.
-        Это блокирует CSRF из сторонних сайтов и из других localhost-приложений на других портах."""
-        if OVERLAY_TOKEN:
-            return hmac.compare_digest(_qarg(q, "token"), OVERLAY_TOKEN)
+    def _is_same_origin(self):
+        """True, если запрос пришёл с нашей же страницы (Origin/Referer на наш порт)
+        либо вовсе без них (запрос самой OBS-страницы / curl). Сторонний сайт не может
+        подделать Referer на localhost:OVERLAY_PORT — это надёжная CSRF-защита."""
         origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
         if not origin:
-            return True  # запрос из самой OBS-страницы / curl без заголовка
+            return True
         try:
             u = urllib.parse.urlparse(origin)
         except ValueError:
@@ -178,6 +175,13 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
         host = (u.hostname or "")
         port = u.port or (443 if u.scheme == "https" else 80)
         return host in ("localhost", "127.0.0.1", "::1") and port == OVERLAY_PORT
+
+    def _check_token(self, q):
+        """Защита write-эндпойнтов. Если OVERLAY_TOKEN задан — нужен верный token,
+        иначе допускаем только same-origin (запрос со своей же страницы)."""
+        if OVERLAY_TOKEN:
+            return hmac.compare_digest(_qarg(q, "token"), OVERLAY_TOKEN)
+        return self._is_same_origin()
 
     def _send_text(self, status, body, ctype="text/plain; charset=utf-8"):
         if isinstance(body, str):
@@ -251,7 +255,7 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             body = _OVERLAY_CACHE.get(bare)
             if body is None:
                 self.send_response(404); self.end_headers(); return
-            # Инжектим OVERLAY_TOKEN в страницу, чтобы её JS мог дёргать /yt/ended и /test/*.
+            # Инжектим OVERLAY_TOKEN в страницу, чтобы её JS мог дёргать /test/*.
             tok_json = json.dumps(OVERLAY_TOKEN or "")
             inject = f'<script>window.OVERLAY_TOKEN={tok_json};</script>'.encode("utf-8")
             m = _HEAD_OPEN_RE.search(body)
@@ -271,14 +275,6 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             links = "".join(f'<li><a href="/{n}.html">/{n}.html</a></li>' for n in sorted(STATIC_HTML))
             self.wfile.write(f"<!doctype html><meta charset=utf-8><title>overlays</title><ul>{links}</ul>".encode("utf-8"))
-            return
-        if path_only == "/yt/ended":
-            q = _qs(self.path)
-            if not self._check_token(q):
-                self._send_text(403, "forbidden: add ?token=<OVERLAY_TOKEN>\n")
-                return
-            yt_advance(_qarg(q, "id") or None)
-            self._send_text(204, b"")
             return
         if path_only in TEST_ROUTES:
             q = _qs(self.path)
