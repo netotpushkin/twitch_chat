@@ -4,7 +4,9 @@
   1. Subscriber-поток слушает chat_bus и складывает отфильтрованные сообщения
      в кольцевой буфер (без команд, без бота, без коротких/дубликатов).
   2. Ticker-поток раз в TITLER_INTERVAL секунд:
-     - проверяет, что в буфере накопилось >= TITLER_MIN_MESSAGES;
+     - проверяет, что с прошлого прогона пришло >= TITLER_MIN_NEW новых сообщений
+       (иначе чат притих — заголовок заведомо тот же, LLM не дёргаем; этот же порог
+       гейтит холодный старт, т.к. счётчик стартует с 0);
      - тянет текущие title/game_name/tags канала через Helix;
      - отдаёт последние LLM_MAX_MESSAGES в LLM с инструкцией вернуть JSON
        {title, tags, confidence};
@@ -21,7 +23,7 @@ import threading
 import time
 
 from config import (
-    TITLER_ENABLED, TITLER_INTERVAL, TITLER_MIN_MESSAGES, TITLER_REQUIRED_TAGS,
+    TITLER_ENABLED, TITLER_INTERVAL, TITLER_MIN_NEW, TITLER_REQUIRED_TAGS,
 )
 from events import chat_bus
 import log
@@ -29,8 +31,10 @@ import openrouter
 import twitch_api
 
 
-BUFFER_MAX       = 60
 LLM_MAX_MESSAGES = 20
+# Чуть больше окна отправки — небольшой хвост на случай роста LLM_MAX_MESSAGES.
+# До LLM всё равно доходят только последние LLM_MAX_MESSAGES.
+BUFFER_MAX       = 30
 MAX_MSG_LEN      = 200
 MIN_TEXT_LEN     = 3
 LLM_TIMEOUT      = 20
@@ -45,6 +49,9 @@ JSON_RE          = re.compile(r"\{.*\}", re.DOTALL)
 
 _buf_lock = threading.Lock()
 _buffer: collections.deque = collections.deque(maxlen=BUFFER_MAX)
+# Сколько новых сообщений упало в буфер с момента прошлого прогона LLM.
+# Тикер использует это, чтобы пропустить вызов модели, когда чат притих.
+_new_since_run = 0
 _busy = threading.Lock()
 _last_applied: tuple[str, tuple] = ("", ())
 
@@ -99,16 +106,27 @@ def _on_chat(evt):
     if text.startswith("!"):
         return
     user = evt.get("user") or evt.get("login") or "?"
+    global _new_since_run
     with _buf_lock:
         # точный дубль предыдущего — спам-эхо, пропускаем
         if _buffer and _buffer[-1]["text"] == text:
             return
         _buffer.append({"user": user, "text": text[:MAX_MSG_LEN]})
+        _new_since_run += 1
 
 
 def _snapshot():
+    """Возвращает (копия буфера, число новых сообщений с прошлого прогона)."""
     with _buf_lock:
-        return list(_buffer)
+        return list(_buffer), _new_since_run
+
+
+def _consume_new(n):
+    """Списать n учтённых новых сообщений после прогона LLM. Вычитаем, а не
+    обнуляем, чтобы не потерять сообщения, пришедшие во время самого прогона."""
+    global _new_since_run
+    with _buf_lock:
+        _new_since_run = max(0, _new_since_run - n)
 
 
 def _parse_llm_json(raw):
@@ -195,9 +213,10 @@ def _run_once(token, broadcaster_id, forced=False, notify=None):
             notify(SKIP_MSG)
         return
     try:
-        msgs = _snapshot()
-        if not forced and len(msgs) < TITLER_MIN_MESSAGES:
-            log.log(f"(titler) skip: в буфере {len(msgs)} < {TITLER_MIN_MESSAGES}")
+        msgs, new_count = _snapshot()
+        if not forced and new_count < TITLER_MIN_NEW:
+            log.log(f"(titler) skip: новых сообщений {new_count} < {TITLER_MIN_NEW} "
+                    "(чат притих, LLM не дёргаем)")
             return
         if not msgs:
             if notify:
@@ -216,6 +235,12 @@ def _run_once(token, broadcaster_id, forced=False, notify=None):
 
         msgs = msgs[-LLM_MAX_MESSAGES:]
         user_msg = _build_user_prompt(game_name, current_title, msgs)
+
+        # Списываем учтённые новые сообщения прямо перед вызовом модели: если Helix
+        # выше упал, кредит свежести цел и попытка повторится на следующем тике.
+        # Дошли до LLM — списываем независимо от её результата (защита от повторных
+        # вызовов при неудачном синтезе).
+        _consume_new(new_count)
 
         try:
             raw = openrouter.ask(
@@ -336,7 +361,7 @@ def start(token, broadcaster_id):
         target=_ticker, args=(token, broadcaster_id), daemon=True, name="titler-tick",
     ).start()
     log.log(f"(titler) включён, интервал {TITLER_INTERVAL}с, "
-            f"мин. сообщений {TITLER_MIN_MESSAGES}")
+            f"мин. новых сообщений {TITLER_MIN_NEW}")
 
 
 def submit_manual(token, broadcaster_id, user, safe_send):

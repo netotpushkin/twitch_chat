@@ -59,7 +59,10 @@ MODERATION_DRY_RUN = os.environ.get("MODERATION_DRY_RUN", "0") not in ("", "0", 
 # Авто-подбор заголовка и тегов стрима по чату через LLM.
 TITLER_ENABLED      = os.environ.get("TITLER_ENABLED", "0") not in ("", "0", "false", "False")
 TITLER_INTERVAL     = int(os.environ.get("TITLER_INTERVAL", "420"))
-TITLER_MIN_MESSAGES = int(os.environ.get("TITLER_MIN_MESSAGES", "10"))
+# Минимум НОВЫХ сообщений с момента прошлого прогона LLM, иначе тикер пропускает
+# вызов (чат притих — заголовок заведомо тот же, нет смысла дёргать модель).
+# Он же гейтит холодный старт: счётчик стартует с 0.
+TITLER_MIN_NEW      = int(os.environ.get("TITLER_MIN_NEW", "10"))
 # Обязательные теги: всегда добавляются впереди списка перед PATCH /channels.
 # Через запятую, например "Русский,18plus". Пустая строка — без обязательных.
 TITLER_REQUIRED_TAGS = [

@@ -106,7 +106,9 @@ MODERATION_DRY_RUN=0
 # Автотитлер
 TITLER_ENABLED=1
 TITLER_INTERVAL=600
-TITLER_MIN_MESSAGES=10
+# Минимум новых сообщений с прошлого прогона, иначе тикер пропускает вызов LLM
+# (чат притих — заголовок заведомо тот же). По умолчанию 10.
+TITLER_MIN_NEW=10
 # TITLER_REQUIRED_TAGS=Русский,18plus   # опционально
 
 # TTS-голос Silero v4_ru (aidar/baya/kseniya/xenia/eugene/random)
