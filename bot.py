@@ -641,7 +641,7 @@ if __name__ == "__main__":
     print(f"Сбор-оверлей:    {base}/goal.html     (источник: /goal)")
     print(f"Сброс сбора:    {base}/test/goal_reset?_=1{tok}")
     print(f"Кубик-оверлей:   {base}/dice.html     (источник: /dice)")
-    print(f"YouTube-оверлей: {base}/youtube.html  (источник: /media)")
+    print(f"YouTube-оверлей: {base}/youtube.html  (источник: /ws/media)")
     print(f"Тест play:      {base}/test/yt/play?v=dQw4w9WgXcQ{tok}")
     print(f"Тест stop:      {base}/test/yt/stop?_=1{tok}")
     print(f"Оверлей картинок:{base}/images.html  (источник: /images)")

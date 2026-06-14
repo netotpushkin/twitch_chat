@@ -191,7 +191,7 @@
     + (window.OVERLAY_TOKEN ? "?token=" + encodeURIComponent(window.OVERLAY_TOKEN) : "");
 
   // Маркер версии: бот логирует его при подключении — видно, что в OBS свежая страница.
-  const OVERLAY_VERSION = 19;
+  const OVERLAY_VERSION = 20;
 
   let ws = null;
   function wsSend(obj) {
@@ -207,6 +207,7 @@
   let apiReady = false;
   let currentVideoId = null;  // id играющего клипа
   let endNotified = false;    // о конце текущего клипа уже доложили
+  let clipStartedAt = 0;      // Date.now() старта текущего клипа (защита от ложного ENDED)
   let readDelay = 0;          // тиков пропустить после старта — НЕ трогаем плеер,
                               // пока клип грузится (иначе в OBS срывается загрузка)
 
@@ -254,7 +255,12 @@
           if (st === YT.PlayerState.PLAYING) {
             try { player.unMute(); player.setVolume(VOLUME); } catch (_) {}
           } else if (st === YT.PlayerState.ENDED) {
-            notifyEnded();  // клип доиграл — ранний выход (раньше pos-детекции)
+            // Клипы минимум 60 c: ENDED в первые секунды после загрузки — это отложенное
+            // событие ПРОШЛОГО клипа (сервер мог уже переключить нас по pos-детекции).
+            // Иначе доложили бы конец нового клипа и зря его скипнули.
+            if (Date.now() - clipStartedAt >= 5000) {
+              notifyEnded();  // клип доиграл — ранний выход (раньше pos-детекции)
+            }
           }
         },
         onError: (e) => {
@@ -323,6 +329,7 @@
       voteHide();
       currentVideoId = cmd.id || null;
       endNotified = false;
+      clipStartedAt = Date.now();
       readDelay = 5;  // ~5 c не трогаем плеер — даём клипу загрузиться
       if (cmd.volume != null) VOLUME = Math.max(0, Math.min(100, cmd.volume | 0));
       try { player.mute(); } catch (_) {}

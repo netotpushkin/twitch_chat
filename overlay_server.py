@@ -319,17 +319,25 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
 
         def writer():
             # Снапшот состояния → потом события из шины. Пустой get-таймаут шлёт ping,
-            # чтобы держать соединение и быстро замечать обрыв.
+            # чтобы держать соединение и быстро замечать обрыв. На закрытии reader кладёт
+            # в очередь None — будит writer сразу, без ожидания таймаута. Перехват широкий:
+            # после finish() сокета write даёт ValueError (закрытый файл), а не только OSError.
             try:
                 for ev in snapshot:
                     send_text(json.dumps(ev, ensure_ascii=False))
                 while alive.is_set():
                     try:
-                        send_text(q.get(timeout=15))
+                        data = q.get(timeout=15)
                     except queue.Empty:
                         with send_lock:
                             self.wfile.write(_ws_encode(b"", 0x9)); self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, OSError):
+                        continue
+                    if data is None:        # сентинел закрытия
+                        break
+                    send_text(data)
+            except Exception:
+                pass
+            finally:
                 alive.clear()
 
         wt = threading.Thread(target=writer, daemon=True)
@@ -357,6 +365,8 @@ class _OverlayHandler(http.server.BaseHTTPRequestHandler):
             pass
         finally:
             alive.clear()
+            try: q.put_nowait(None)   # разбудить writer, чтобы не висел до таймаута
+            except queue.Full: pass
             bus.unsubscribe(q)
             self.close_connection = True  # не пытаться читать следующий запрос из ws-сокета
 
@@ -448,9 +458,9 @@ class _QuietHTTPServer(http.server.ThreadingHTTPServer):
 
 
 def _media_heartbeat():
-    """Пульс для оверлея: пока клип играет, раз в секунду шлём tick по SSE. По тику
-    оверлей читает позицию плеера и шлёт её в /yt/pos, по чему сервер ловит реальный
-    конец клипа (onmessage у SSE в OBS CEF работает надёжно)."""
+    """Пульс для оверлея: пока клип играет, раз в секунду шлём tick по WS (/ws/media).
+    По тику оверлей читает позицию плеера и шлёт её обратно, по чему сервер ловит реальный
+    конец клипа."""
     while True:
         time.sleep(1.0)
         try:
