@@ -12,6 +12,12 @@ from http_pool import request
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Дефолтный routing для всех вызовов: выбираем самого дешёвого провайдера.
+# Выходы у нас короткие, вызовов (особенно на потоке чата) много — цена важнее
+# лишних десятков мс задержки. Конкретный вызов может переопределить, передав
+# свой provider= (в т.ч. None-эффект недостижим: None означает «взять дефолт»).
+_DEFAULT_PROVIDER = {"sort": "price"}
+
 
 class OpenRouterError(RuntimeError):
     pass
@@ -36,8 +42,9 @@ def ask(prompt, system=None, model=None, temperature=0.7, max_tokens=512, timeou
     response_format — например {"type": "json_object"} чтобы заставить модель
                 вернуть валидный JSON. Требуется, чтобы слово "json" встречалось
                 в самих сообщениях (требование OpenAI/Azure).
-    provider  — dict routing-настроек OpenRouter, например {"sort": "latency"}
-                чтобы выбрать самого быстрого провайдера (Groq/Cerebras и т.п.).
+    provider  — dict routing-настроек OpenRouter. По умолчанию (None) применяется
+                _DEFAULT_PROVIDER ({"sort": "price"} — самый дешёвый провайдер);
+                передай свой dict, например {"sort": "latency"}, чтобы переопределить.
     Бросает OpenRouterError при отсутствии ключа/ошибке API/пустом ответе.
     """
     if not OPENROUTER_API_KEY:
@@ -68,8 +75,8 @@ def chat(messages, model=None, temperature=0.7, max_tokens=512, timeout=30, reas
         payload["reasoning"] = reasoning
     if response_format is not None:
         payload["response_format"] = response_format
-    if provider is not None:
-        payload["provider"] = provider
+    # None → дефолтный routing по цене; явный dict переопределяет.
+    payload["provider"] = provider if provider is not None else _DEFAULT_PROVIDER
     body = json.dumps(payload).encode("utf-8")
 
     headers = {

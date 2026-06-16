@@ -202,9 +202,8 @@ def _llm_verdict(text):
         reply = llm_ask(
             wrapped, system=_SYSTEM_PROMPT,
             max_tokens=60, temperature=0.0, timeout=10,
-            # Модерация latency-чувствительна: выход крошечный, важно время отклика.
-            # Просим OpenRouter выбрать самого быстрого провайдера (Groq/Cerebras и т.п.).
-            provider={"sort": "latency"},
+            # Routing по цене (самый дешёвый провайдер) берётся из дефолта openrouter —
+            # явно передавать provider не нужно.
         )
     except ContentFilteredError:
         # Провайдер сам зарезал — это сильный сигнал «опасное содержание».
