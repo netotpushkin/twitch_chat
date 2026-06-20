@@ -27,7 +27,6 @@ from commands import BOT_COMMANDS
 from config import CHANNEL, CLIENT_ID, DONATTY_REF, DONATTY_TOKEN, OVERLAY_PORT, OVERLAY_TOKEN
 import dice
 import donatty
-import economy
 from events import chat_bus, dice_bus, image_bus
 import goal
 import king
@@ -450,8 +449,6 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                             # Модерация — асинхронно, не блокирует IRC-loop. Если LLM решит
                             # «удалять», оверлей увидит CLEARMSG как обычное действие модератора.
                             moderation.moderate(tags, llogin, text, on_pass=_voice_if_passed)
-                            # +1 монета с кулдауном; функция сама фильтрует частые сообщения.
-                            economy.award_chat(tags.get("user-id", ""), llogin, user)
                         if is_command:
                             cparts = stripped.split()
                             cmd = cparts[0].lower()
@@ -502,40 +499,6 @@ def run_chat(token, nick, broadcaster_id=None, user_id=None):
                                 # (без re-tokenize: пробелы внутри сохраняем).
                                 question = stripped[len(cparts[0]):].strip()
                                 dice.submit(user, question, safe_send, dice_bus, prompt=prompt)
-                            elif cmd == "!монеты":
-                                # Без аргументов — свой баланс. С @ником (только мод/стример) — чужой.
-                                if args and is_mod:
-                                    target = args[0].lstrip("@").lower()
-                                    bal = economy.balance_by_login(target)
-                                    if bal is None:
-                                        safe_send(f"@{user} у @{target} пока 0 монет")
-                                    else:
-                                        safe_send(f"@{user} у @{target}: {bal} монет")
-                                else:
-                                    bal = economy.balance(tags.get("user-id", ""))
-                                    safe_send(f"@{user} у тебя {bal} монет")
-                            elif cmd == "!топ":
-                                rows = economy.top(5)
-                                if not rows:
-                                    safe_send(f"@{user} пока пусто, копите")
-                                else:
-                                    parts_msg = [f"{i + 1}. {name} — {bal}"
-                                                 for i, (name, bal) in enumerate(rows)]
-                                    safe_send("Топ: " + " | ".join(parts_msg))
-                            elif cmd == "!дать":
-                                if len(args) < 2:
-                                    safe_send(f"@{user} формат: !дать @ник <количество>")
-                                else:
-                                    try:
-                                        amount = int(args[1])
-                                    except ValueError:
-                                        safe_send(f"@{user} количество должно быть числом")
-                                        continue
-                                    ok, msg = economy.transfer(
-                                        tags.get("user-id", ""), args[0], amount
-                                    )
-                                    if msg:
-                                        safe_send(f"@{user} {msg}")
                             elif cmd == "!озвучка":
                                 if not is_mod:
                                     continue
@@ -620,7 +583,6 @@ if __name__ == "__main__":
     token, nick, user_id = load_credentials()
     broadcaster_id = load_badges(token, CHANNEL.lstrip("#"))
     start_overlay_server()
-    economy.load()
     tts.start(log=print)
 
     base = f"http://localhost:{OVERLAY_PORT}"
@@ -655,9 +617,5 @@ if __name__ == "__main__":
                          daemon=True, name="donatty").start()
     else:
         print("(donatty) DONATTY_REF/DONATTY_TOKEN не заданы — интеграция выключена")
-    # Watchtime-тикер: периодически тянет /chat/chatters и раздаёт монеты.
-    threading.Thread(target=economy.run_watchtime_ticker,
-                     args=(token, broadcaster_id, user_id), daemon=True,
-                     name="watchtime").start()
 
     run_chat(token, nick, broadcaster_id=broadcaster_id, user_id=user_id)

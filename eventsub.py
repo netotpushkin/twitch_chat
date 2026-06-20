@@ -4,7 +4,6 @@ import json
 import time
 import urllib.error
 
-import economy
 import http_pool
 import log
 from config import CLIENT_ID
@@ -114,7 +113,6 @@ def run_eventsub(token, broadcaster_id, our_user_id):
                 login = (ev.get("user_login") or "").lower()
                 display = ev.get("user_name", "")
                 mark_follower(uid)
-                economy.award_follow(uid, login=login, display=display)
                 events_bus.publish({
                     "type":  "follow",
                     "user":  display,
@@ -122,14 +120,8 @@ def run_eventsub(token, broadcaster_id, our_user_id):
                     "at":    ev.get("followed_at", ""),
                 })
             elif st == "channel.subscribe":
-                uid = ev.get("user_id", "")
                 login = (ev.get("user_login") or "").lower()
                 display = ev.get("user_name", "")
-                # Подарочные подписки получают монеты в channel.subscription.gift,
-                # тут начисляем только за самостоятельную подписку.
-                if not ev.get("is_gift"):
-                    economy.award(uid, economy.RATES["sub"], "sub",
-                                  login=login, display=display)
                 events_bus.publish({
                     "type":  "sub",
                     "user":  display,
@@ -139,11 +131,8 @@ def run_eventsub(token, broadcaster_id, our_user_id):
                 })
             elif st == "channel.subscription.message":
                 msg = (ev.get("message") or {}).get("text", "")
-                uid = ev.get("user_id", "")
                 login = (ev.get("user_login") or "").lower()
                 display = ev.get("user_name", "")
-                economy.award(uid, economy.RATES["resub"], "resub",
-                              login=login, display=display)
                 events_bus.publish({
                     "type":     "resub",
                     "user":     display,
@@ -155,11 +144,8 @@ def run_eventsub(token, broadcaster_id, our_user_id):
                     "message":  msg,
                 })
             elif st == "channel.raid":
-                uid = ev.get("from_broadcaster_user_id", "")
                 login = (ev.get("from_broadcaster_user_login") or "").lower()
                 display = ev.get("from_broadcaster_user_name", "")
-                economy.award(uid, economy.RATES["raid"], "raid",
-                              login=login, display=display)
                 events_bus.publish({
                     "type":    "raid",
                     "user":    display,
@@ -168,14 +154,9 @@ def run_eventsub(token, broadcaster_id, our_user_id):
                 })
             elif st == "channel.subscription.gift":
                 anon = bool(ev.get("is_anonymous"))
-                uid = ev.get("user_id", "")
                 login = (ev.get("user_login") or "").lower()
                 display = ev.get("user_name", "")
                 total = ev.get("total") or 0
-                # Дарителю — по subgift_per_recipient за каждый подарок (аноним не получает).
-                if not anon and total > 0:
-                    economy.award(uid, economy.RATES["subgift_per_recipient"] * total,
-                                  f"subgift x{total}", login=login, display=display)
                 events_bus.publish({
                     "type":  "subgift",
                     "user":  "Аноним" if anon else display,
